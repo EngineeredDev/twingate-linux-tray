@@ -1,0 +1,21 @@
+min_version = "2024.9.5"
+
+[env]
+_.path = ['{{config_root}}/node_modules/.bin']
+
+# Use the project name derived from the current directory
+PROJECT_NAME = "{{ config_root | basename }}"
+
+# Set up the path for node module binaries
+BIN_PATH = "{{ config_root }}/node_modules/.bin"
+
+NODE_ENV = "{{ env.NODE_ENV | default(value='development') }}"
+
+[tools]
+# Install Node.js using the specified version
+node = "{{ env['NODE_VERSION'] | default(value='lts') }}"
+
+# Install some npm packages globally if needed
+"npm:typescript" = "latest"
+"npm:eslint" = "latest"
+"npm:jest" = "latest"
