@@ -1,4 +1,7 @@
-use std::process::Command;
+use std::{
+    io::{BufRead, BufReader, Read},
+    process::{Command, Stdio},
+};
 
 use arboard::Clipboard;
 use serde::Deserialize;
@@ -203,7 +206,7 @@ fn get_network_data() -> Option<Network> {
     Some(serde_json::from_slice(&tg_notifier.arg("resources").output().unwrap().stdout).unwrap())
 }
 
-fn build_tray_menu(app: &AppHandle) -> Result<TrayIconBuilder<tauri::Wry>, tauri::Error> {
+fn build_tray_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, tauri::Error> {
     // app.remove_tray_by_id(TWINGATE_TRAY_ID);
     let menu: Menu<tauri::Wry>;
     match get_network_data() {
@@ -294,9 +297,11 @@ fn build_tray_menu(app: &AppHandle) -> Result<TrayIconBuilder<tauri::Wry>, tauri
         }
     }
 
-    Ok(TrayIconBuilder::with_id(TWINGATE_TRAY_ID)
-        .menu(&menu)
-        .show_menu_on_left_click(true))
+    return Ok(menu);
+
+    // Ok(TrayIconBuilder::with_id(TWINGATE_TRAY_ID)
+    //     .menu(&menu)
+    //     .show_menu_on_left_click(true))
 }
 
 fn handle_copy_address(address_id: &str) {
@@ -323,14 +328,23 @@ fn rebuild_tray_after_delay(app_handle: AppHandle) {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         match build_tray_menu(&app_handle) {
-            Ok(builder) => {
-                // Set the same on_menu_event handler
-                let builder = create_menu_event_handler(builder);
-
-                // Build the new tray
-                if let Err(e) = builder.build(&app_handle) {
-                    eprintln!("Failed to rebuild tray: {}", e);
+            Ok(menu) => {
+                match app_handle.tray_by_id(TWINGATE_TRAY_ID) {
+                    Some(tray) => {
+                        // TODO: handle error case
+                        let _ = tray.set_menu(Some(menu));
+                    }
+                    None => {
+                        // TODO: create entire tray?
+                    }
                 }
+                // Set the same on_menu_event handler
+                // let builder = create_menu_event_handler(builder);
+                //
+                // // Build the new tray
+                // if let Err(e) = builder.build(&app_handle) {
+                //     eprintln!("Failed to rebuild tray: {}", e);
+                // }
             }
             Err(e) => {
                 eprintln!("Failed to build tray menu: {}", e);
@@ -347,24 +361,93 @@ fn create_menu_event_handler(builder: TrayIconBuilder<tauri::Wry>) -> TrayIconBu
         }
         START_SERVICE_ID => {
             let shell = app.shell();
-            let output = tauri::async_runtime::block_on(async move {
-                shell
-                    .command("twingate")
-                    .args(["start"])
-                    .output()
-                    .await
-                    .unwrap()
-            });
-            if output.status.success() {
-                println!("Result: {:?}", String::from_utf8(output.stdout));
-            } else {
-                println!("Exit with code: {}", output.status.code().unwrap());
+            // shell.sidecar("pkexec").unwrap().args(["twingate", "start"]);
+            // let output = tauri::async_runtime::block_on(async move {
+            //     shell
+            //         .command("pkexec")
+            //         .args(["twingate", "start"])
+            //         .output()
+            //         .await
+            //         .unwrap()
+            // });
+            // if output.status.success() {
+            //     println!("Result: {:?}", String::from_utf8(output.stdout));
+            // } else {
+            //     println!("Exit with code: {}", output.status.code().unwrap());
+            // }
+            // let output = {
+            let sudo = match Command::new("which").arg("pkexec").output() {
+                Ok(output) => {
+                    if output.stdout.is_empty() {
+                        "sudo"
+                    } else {
+                        "pkexec"
+                    }
+                }
+                Err(_) => "sudo",
+            };
+
+            Command::new("pkexec")
+                .env_clear() // Important for Wayland compatibility
+                .env("DISPLAY", std::env::var("DISPLAY").unwrap())
+                .env("XAUTHORITY", std::env::var("XAUTHORITY").unwrap())
+                .arg("echo")
+                .arg("Hello")
+                .status()
+                .expect("Failed to execute command");
+
+            // Command::new(sudo).arg("twingate").arg("start").output()
+            // };
+            //
+            // Create command with piped stdout
+            let mut child = Command::new(sudo)
+                .arg("echo")
+                .arg("'start'")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .expect("Failed to start command");
+
+            // Get stdout handle
+            let stdout = child.stdout.take().expect("Failed to get stdout handle");
+
+            // Create a buffered reader and stream the output line by line
+            let reader = BufReader::new(stdout);
+            println!("Command output:");
+            for line in reader.lines() {
+                match line {
+                    Ok(line) => println!("{}", line),
+                    Err(e) => eprintln!("Error reading line: {}", e),
+                }
             }
 
-            // Command::new("pkexec")
-            //     .args(["twingate", "start"])
-            //     .spawn()
+            // Wait for the process to finish
+            let status = child.wait().expect("Failed to wait for command");
+            println!("Command exited with status: {}", status);
+
+            // println!(
+            //     "Command output:\n{}",
+            //     String::from_utf8_lossy(&output.unwrap().stdout)
+            // );
+
+            // if output.status.success() {
+            //     Ok(())
+            // } else {
+            //     let stderr = std::str::from_utf8(&output.stderr).unwrap_or("");
+            //     anyhow::bail!("{stderr}");
+            // }
+
+            // let output = Command::new("pkexec")
+            //     .arg("twingate")
+            //     .arg("start")
+            //     .output()
             //     .unwrap();
+            //
+            // println!(
+            //     "Command output:\n{}",
+            //     String::from_utf8_lossy(&output.stdout)
+            // );
+            // println!("Exit status: {}", output.status);
 
             rebuild_tray_after_delay(app.app_handle().clone());
         }
@@ -405,8 +488,16 @@ fn create_menu_event_handler(builder: TrayIconBuilder<tauri::Wry>) -> TrayIconBu
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![greet])
         .setup(|app| {
-            let tray_builder = build_tray_menu(&app.app_handle())?;
+            let menu = build_tray_menu(&app.app_handle())?;
+
+            let tray_builder = TrayIconBuilder::with_id(TWINGATE_TRAY_ID)
+                .menu(&menu)
+                .show_menu_on_left_click(true);
+
             let tray_builder = create_menu_event_handler(tray_builder);
 
             tray_builder.build(app)?;
@@ -415,9 +506,6 @@ pub fn run() {
             app.get_webview_window("main").unwrap().open_devtools();
             Ok(())
         })
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

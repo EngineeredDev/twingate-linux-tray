@@ -2,9 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": [
-    "main"
-  ],
+  "windows": ["main"],
   "permissions": [
     "core:default",
     "opener:default",
@@ -14,12 +12,33 @@
         {
           "name": "twingate-notifier",
           "cmd": "twingate-notifier",
+          "args": ["resources"]
+        },
+        {
+          "name": "twingate-start",
+          "cmd": "twingate",
+          "args": ["start"]
+        },
+        {
+          "name": "exec-sh",
+          "cmd": "sh",
           "args": [
-            "resources"
+            "-c",
+            {
+              "validator": "\\S+"
+            }
           ]
+        },
+        {
+          "name": "pkexec",
+          "cmd": "pkexec",
+          "args": ["twingate", "start"]
         }
       ]
     },
-    "shell:default"
+    "shell:default",
+    "shell:allow-spawn",
+    "shell:allow-stdin-write"
   ]
 }
+
