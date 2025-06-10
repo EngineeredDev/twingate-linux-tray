@@ -78,10 +78,11 @@ const COPY_ADDRESS_ID: &str = "copy_address";
 const AUTHENTICATE_ID: &str = "authenticate";
 const QUIT_ID: &str = "quit";
 
-fn start_resource_auth(auth_id: &str) {
+
+async fn start_resource_auth(auth_id: &str) {
     let resource_id = auth_id.split("-").last().unwrap();
 
-    let n = get_network_data().unwrap();
+    let n = get_network_data().await.unwrap();
 
     let idx = n
         .resources
@@ -95,6 +96,7 @@ fn start_resource_auth(auth_id: &str) {
         .spawn()
         .unwrap();
 }
+    
 
 fn get_address_from_resource(resource: &Resource) -> &String {
     resource
@@ -216,7 +218,9 @@ async fn check_auth_flow() -> bool {
                 .expect("Failed to compile regex");
                 if let Some(caps) = re.captures(&output_str) {
                     if let Some(url) = caps.get(0) {
-                        if opened_url == false {
+
+                        if !opened_url {
+    
                             let _ = Command::new("xdg-open")
                                 .arg(url.as_str())
                                 .output()
@@ -368,11 +372,12 @@ async fn build_tray_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, tauri::Err
     //     .show_menu_on_left_click(true))
 }
 
-fn handle_copy_address(address_id: &str) {
+
+async fn handle_copy_address(address_id: &str) {
     let resource_id = address_id.split("-").last().unwrap();
 
     // TODO: should check for None but technically shouldn't happen
-    let n = get_network_data().unwrap();
+    let n = get_network_data().await.unwrap();
 
     let idx = n
         .resources
@@ -384,8 +389,9 @@ fn handle_copy_address(address_id: &str) {
 
     clipboard
         .set_text(get_address_from_resource(&n.resources[idx]))
-        .unwrap()
+        .unwrap();
 }
+    
 
 fn rebuild_tray_after_delay(app_handle: AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -419,44 +425,54 @@ fn rebuild_tray_after_delay(app_handle: AppHandle) {
     });
 }
 
-fn create_menu_event_handler(builder: TrayIconBuilder<tauri::Wry>) -> TrayIconBuilder<tauri::Wry> {
-    builder.on_menu_event(|app, event| match event.id.as_ref() {
-        "quit" => {
-            println!("quit menu item was clicked");
-            app.exit(0);
-        }
-        START_SERVICE_ID => {
-            let shell = app.shell();
-            let output = tauri::async_runtime::block_on(async move {
-                shell
-                    .command("pkexec")
-                    .args(["twingate", "start"])
-                    .output()
-                    .await
-                    .unwrap()
-            });
-            if output.status.success() {
-                println!("Result: {:?}", String::from_utf8(output.stdout));
-            } else {
-                println!("Exit with code: {}", output.status.code().unwrap());
-            }
 
-            rebuild_tray_after_delay(app.app_handle().clone());
-        }
-        STOP_SERVICE_ID => {
-            rebuild_tray_after_delay(app.app_handle().clone());
-        }
-        address_id if address_id.contains(COPY_ADDRESS_ID) => {
-            handle_copy_address(address_id);
-        }
-        auth_id if auth_id.contains(AUTHENTICATE_ID) => {
-            start_resource_auth(auth_id);
-        }
-        _ => {
-            println!("menu item {:?} not handled", event.id);
+fn create_menu_event_handler(builder: TrayIconBuilder<tauri::Wry>) -> TrayIconBuilder<tauri::Wry> {
+    builder.on_menu_event(|app, event| {
+        let event_id = event.id.clone();
+        match event_id.as_ref() {
+            "quit" => {
+                println!("quit menu item was clicked");
+                app.exit(0);
+            }
+            START_SERVICE_ID => {
+                let shell = app.shell();
+                let output = tauri::async_runtime::block_on(async move {
+                    shell
+                        .command("pkexec")
+                        .args(["twingate", "start"])
+                        .output()
+                        .await
+                        .unwrap()
+                });
+                if output.status.success() {
+                    println!("Result: {:?}", String::from_utf8(output.stdout));
+                } else {
+                    println!("Exit with code: {}", output.status.code().unwrap());
+                }
+                rebuild_tray_after_delay(app.app_handle().clone());
+            }
+            STOP_SERVICE_ID => {
+                rebuild_tray_after_delay(app.app_handle().clone());
+            }
+            address_id if address_id.contains(COPY_ADDRESS_ID) => {
+                let address_id = address_id.to_string();
+                tauri::async_runtime::spawn(async move {
+                    handle_copy_address(&address_id).await;
+                });
+            }
+            auth_id if auth_id.contains(AUTHENTICATE_ID) => {
+                let auth_id = auth_id.to_string();
+                tauri::async_runtime::spawn(async move {
+                    start_resource_auth(&auth_id).await;
+                });
+            }
+            _ => {
+                println!("menu item {:?} not handled", event_id);
+            }
         }
     })
 }
+    
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
