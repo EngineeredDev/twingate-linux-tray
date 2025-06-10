@@ -190,58 +190,53 @@ fn build_auth_menu(resource: &Resource, app: &AppHandle) -> Vec<MenuItem<tauri::
     }
 }
 
-fn check_auth_flow() -> bool {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
 
+async fn check_auth_flow() -> bool {
     let mut opened_url = false;
 
-    runtime.block_on(async move {
-        loop {
-            let output_str = str::from_utf8(
-                &Command::new("twingate-notifier")
-                    .arg("resources")
-                    .output()
-                    .unwrap()
-                    .stdout,
-            )
-            .unwrap_or_default()
-            .to_lowercase();
+    loop {
+        let output_str = str::from_utf8(
+            &Command::new("twingate-notifier")
+                .arg("resources")
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap_or_default()
+        .to_lowercase();
 
-            match output_str {
-                s if s.contains("not-running") => {
-                    return true;
-                }
-                ref s if s.contains("authenticating") => {
-                    let re = Regex::new(
-                        r"https?://[\w.-]+(?:\.[\w\.-]+)+[\w\-\._~:/?#[\]@!$&'()*+,;=]+",
-                    )
-                    .expect("Failed to compile regex");
-                    if let Some(caps) = re.captures(&output_str) {
-                        if let Some(url) = caps.get(0) {
-                            if opened_url == false {
-                                let _ = Command::new("xdg-open")
-                                    .arg(url.as_str())
-                                    .output()
-                                    .expect("failed to execute process");
-                                opened_url = true;
-                            }
-                        } else {
-                            println!("No URL found.");
+        match output_str {
+            s if s.contains("not-running") => {
+                return true;
+            }
+            ref s if s.contains("authenticating") => {
+                let re = Regex::new(
+                    r"https?://[\w.-]+(?:\.[\w\.-]+)+[\w\-\._~:/?#[\]@!$&'()*+,;=]+",
+                )
+                .expect("Failed to compile regex");
+                if let Some(caps) = re.captures(&output_str) {
+                    if let Some(url) = caps.get(0) {
+                        if opened_url == false {
+                            let _ = Command::new("xdg-open")
+                                .arg(url.as_str())
+                                .output()
+                                .expect("failed to execute process");
+                            opened_url = true;
                         }
                     } else {
                         println!("No URL found.");
                     }
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                    return true;
+                } else {
+                    println!("No URL found.");
                 }
-                _ => return true,
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                return true;
             }
+            _ => return true,
         }
-    })
+    }
 }
+    
 
 fn get_network_data() -> Option<Network> {
     let status_cmd = &Command::new("twingate").arg("status").output().unwrap();
@@ -252,7 +247,9 @@ fn get_network_data() -> Option<Network> {
         return None;
     }
 
-    check_auth_flow();
+
+    tauri::async_runtime::block_on(check_auth_flow());
+    
 
     let output = Command::new("twingate-notifier")
         .arg("resources")
@@ -441,25 +438,6 @@ fn create_menu_event_handler(builder: TrayIconBuilder<tauri::Wry>) -> TrayIconBu
             rebuild_tray_after_delay(app.app_handle().clone());
         }
         STOP_SERVICE_ID => {
-            let shell = app.shell();
-            let output = tauri::async_runtime::block_on(async move {
-                shell
-                    .command("echo")
-                    .args(["Hello from Rust!"])
-                    .output()
-                    .await
-                    .unwrap()
-            });
-            if output.status.success() {
-                println!("Result: {:?}", String::from_utf8(output.stdout));
-            } else {
-                println!("Exit with code: {}", output.status.code().unwrap());
-            }
-            Command::new("pkexec")
-                .args(["twingate", "stop"])
-                .spawn()
-                .unwrap();
-
             rebuild_tray_after_delay(app.app_handle().clone());
         }
         address_id if address_id.contains(COPY_ADDRESS_ID) => {
