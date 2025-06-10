@@ -238,7 +238,8 @@ async fn check_auth_flow() -> bool {
 }
     
 
-fn get_network_data() -> Option<Network> {
+
+async fn get_network_data() -> Option<Network> {
     let status_cmd = &Command::new("twingate").arg("status").output().unwrap();
     let status = std::str::from_utf8(&status_cmd.stdout).unwrap();
 
@@ -247,9 +248,7 @@ fn get_network_data() -> Option<Network> {
         return None;
     }
 
-
-    tauri::async_runtime::block_on(check_auth_flow());
-    
+    check_auth_flow().await;
 
     let output = Command::new("twingate-notifier")
         .arg("resources")
@@ -265,11 +264,16 @@ fn get_network_data() -> Option<Network> {
         }
     }
 }
+    
 
-fn build_tray_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, tauri::Error> {
+
+async fn build_tray_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, tauri::Error> {
+    
     // app.remove_tray_by_id(TWINGATE_TRAY_ID);
     let menu: Menu<tauri::Wry>;
-    match get_network_data() {
+
+    match get_network_data().await {
+    
         Some(n) => {
             let visible_resources: Vec<_> = n
                 .resources
@@ -387,7 +391,9 @@ fn rebuild_tray_after_delay(app_handle: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        match build_tray_menu(&app_handle) {
+
+        match build_tray_menu(&app_handle).await {
+    
             Ok(menu) => {
                 match app_handle.tray_by_id(TWINGATE_TRAY_ID) {
                     Some(tray) => {
@@ -459,7 +465,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![greet])
         .setup(|app| {
-            let menu = build_tray_menu(&app.app_handle())?;
+
+            let menu = tauri::async_runtime::block_on(build_tray_menu(&app.app_handle()))?;
+    
 
             let tray_builder = TrayIconBuilder::with_id(TWINGATE_TRAY_ID)
                 .menu(&menu)
