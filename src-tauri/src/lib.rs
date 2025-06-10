@@ -218,7 +218,7 @@ async fn check_auth_flow() -> bool {
             }
             ref s if s.contains("authenticating") => {
                 println!("Debug: Found authenticating status, looking for URL");
-                let re = Regex::new(r"https?://[\w.-]+(?:\.[\w\.-]+)+[\w\-\._~:/?#\[\]@!$&'()*+,;=]+")
+                let re = Regex::new(r"https?://[\w.-]+(?:\.[\w\.-]+)+[\w\-\._~:/?#\[\]@!$&'()*+,;=%]+")
                     .expect("Failed to compile regex");
                 if let Some(caps) = re.captures(&output_str) {
                     if let Some(url) = caps.get(0) {
