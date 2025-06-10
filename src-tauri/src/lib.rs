@@ -190,8 +190,12 @@ fn build_auth_menu(resource: &Resource, app: &AppHandle) -> Vec<MenuItem<tauri::
     }
 }
 
+
 async fn check_auth_flow() -> bool {
     let mut opened_url = false;
+
+    // Add a small delay to allow the service to initialize
+    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
     loop {
         let output_str = str::from_utf8(
@@ -204,17 +208,22 @@ async fn check_auth_flow() -> bool {
         .unwrap_or_default()
         .to_lowercase();
 
+        // Debug logging to understand what status strings are being returned
+        println!("Debug: twingate status output: '{}'", output_str);
+
         match output_str {
             s if s.contains("not-running") => {
+                println!("Debug: Service not running, returning true");
                 return true;
             }
             ref s if s.contains("authenticating") => {
-                let re =
-                    Regex::new(r"https?://[\w.-]+(?:\.[\w\.-]+)+[\w\-\._~:/?#\[\]@!$&'()*+,;=]+")
-                        .expect("Failed to compile regex");
+                println!("Debug: Found authenticating status, looking for URL");
+                let re = Regex::new(r"https?://[\w.-]+(?:\.[\w\.-]+)+[\w\-\._~:/?#\[\]@!$&'()*+,;=]+")
+                    .expect("Failed to compile regex");
                 if let Some(caps) = re.captures(&output_str) {
                     if let Some(url) = caps.get(0) {
                         if !opened_url {
+                            println!("Debug: Opening URL: {}", url.as_str());
                             let _ = Command::new("xdg-open")
                                 .arg(url.as_str())
                                 .output()
@@ -222,18 +231,23 @@ async fn check_auth_flow() -> bool {
                             opened_url = true;
                         }
                     } else {
-                        println!("No URL found.");
+                        println!("Debug: No URL found in regex capture.");
                     }
                 } else {
-                    println!("No URL found.");
+                    println!("Debug: No URL found in status output.");
                 }
                 tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                return true;
+                continue; // Continue checking instead of returning
             }
-            _ => return true,
+            _ => {
+                println!("Debug: Unknown status, continuing to check");
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                continue; // Continue checking instead of returning
+            }
         }
     }
 }
+    
 
 async fn get_network_data() -> Option<Network> {
     let status_cmd = &Command::new("twingate").arg("status").output().unwrap();
