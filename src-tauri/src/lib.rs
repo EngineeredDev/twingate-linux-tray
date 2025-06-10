@@ -78,7 +78,6 @@ const COPY_ADDRESS_ID: &str = "copy_address";
 const AUTHENTICATE_ID: &str = "authenticate";
 const QUIT_ID: &str = "quit";
 
-
 async fn start_resource_auth(auth_id: &str) {
     let resource_id = auth_id.split("-").last().unwrap();
 
@@ -96,7 +95,6 @@ async fn start_resource_auth(auth_id: &str) {
         .spawn()
         .unwrap();
 }
-    
 
 fn get_address_from_resource(resource: &Resource) -> &String {
     resource
@@ -192,14 +190,13 @@ fn build_auth_menu(resource: &Resource, app: &AppHandle) -> Vec<MenuItem<tauri::
     }
 }
 
-
 async fn check_auth_flow() -> bool {
     let mut opened_url = false;
 
     loop {
         let output_str = str::from_utf8(
-            &Command::new("twingate-notifier")
-                .arg("resources")
+            &Command::new("twingate")
+                .arg("status")
                 .output()
                 .unwrap()
                 .stdout,
@@ -212,15 +209,12 @@ async fn check_auth_flow() -> bool {
                 return true;
             }
             ref s if s.contains("authenticating") => {
-                let re = Regex::new(
-                    r"https?://[\w.-]+(?:\.[\w\.-]+)+[\w\-\._~:/?#[\]@!$&'()*+,;=]+",
-                )
-                .expect("Failed to compile regex");
+                let re =
+                    Regex::new(r"https?://[\w.-]+(?:\.[\w\.-]+)+[\w\-\._~:/?#\[\]@!$&'()*+,;=]+")
+                        .expect("Failed to compile regex");
                 if let Some(caps) = re.captures(&output_str) {
                     if let Some(url) = caps.get(0) {
-
                         if !opened_url {
-    
                             let _ = Command::new("xdg-open")
                                 .arg(url.as_str())
                                 .output()
@@ -240,8 +234,6 @@ async fn check_auth_flow() -> bool {
         }
     }
 }
-    
-
 
 async fn get_network_data() -> Option<Network> {
     let status_cmd = &Command::new("twingate").arg("status").output().unwrap();
@@ -268,16 +260,12 @@ async fn get_network_data() -> Option<Network> {
         }
     }
 }
-    
-
 
 async fn build_tray_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, tauri::Error> {
-    
     // app.remove_tray_by_id(TWINGATE_TRAY_ID);
     let menu: Menu<tauri::Wry>;
 
     match get_network_data().await {
-    
         Some(n) => {
             let visible_resources: Vec<_> = n
                 .resources
@@ -372,7 +360,6 @@ async fn build_tray_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, tauri::Err
     //     .show_menu_on_left_click(true))
 }
 
-
 async fn handle_copy_address(address_id: &str) {
     let resource_id = address_id.split("-").last().unwrap();
 
@@ -391,15 +378,12 @@ async fn handle_copy_address(address_id: &str) {
         .set_text(get_address_from_resource(&n.resources[idx]))
         .unwrap();
 }
-    
 
 fn rebuild_tray_after_delay(app_handle: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-
         match build_tray_menu(&app_handle).await {
-    
             Ok(menu) => {
                 match app_handle.tray_by_id(TWINGATE_TRAY_ID) {
                     Some(tray) => {
@@ -424,7 +408,6 @@ fn rebuild_tray_after_delay(app_handle: AppHandle) {
         }
     });
 }
-
 
 fn create_menu_event_handler(builder: TrayIconBuilder<tauri::Wry>) -> TrayIconBuilder<tauri::Wry> {
     builder.on_menu_event(|app, event| {
@@ -472,7 +455,6 @@ fn create_menu_event_handler(builder: TrayIconBuilder<tauri::Wry>) -> TrayIconBu
         }
     })
 }
-    
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -481,9 +463,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![greet])
         .setup(|app| {
-
             let menu = tauri::async_runtime::block_on(build_tray_menu(&app.app_handle()))?;
-    
 
             let tray_builder = TrayIconBuilder::with_id(TWINGATE_TRAY_ID)
                 .menu(&menu)
