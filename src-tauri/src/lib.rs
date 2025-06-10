@@ -190,7 +190,6 @@ fn build_auth_menu(resource: &Resource, app: &AppHandle) -> Vec<MenuItem<tauri::
     }
 }
 
-
 async fn check_auth_flow() -> bool {
     let mut opened_url = false;
 
@@ -198,25 +197,21 @@ async fn check_auth_flow() -> bool {
     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
     loop {
-        let output_str = str::from_utf8(
-            &Command::new("twingate")
-                .arg("status")
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap_or_default()
-        .to_lowercase();
+        let output = Command::new("twingate")
+            .arg("status")
+            .output()
+            .unwrap();
+        let output_str = str::from_utf8(&output.stdout).unwrap_or_default();
 
         // Debug logging to understand what status strings are being returned
         println!("Debug: twingate status output: '{}'", output_str);
 
         match output_str {
-            s if s.contains("not-running") => {
+            s if s.to_lowercase().contains("not-running") => {
                 println!("Debug: Service not running, returning true");
                 return true;
             }
-            ref s if s.contains("authenticating") => {
+            ref s if s.to_lowercase().contains("authenticating") => {
                 println!("Debug: Found authenticating status, looking for URL");
                 let re = Regex::new(r"https?://[\w.-]+(?:\.[\w\.-]+)+[\w\-\._~:/?#\[\]@!$&'()*+,;=%]+")
                     .expect("Failed to compile regex");
@@ -247,7 +242,6 @@ async fn check_auth_flow() -> bool {
         }
     }
 }
-    
 
 async fn get_network_data() -> Option<Network> {
     let status_cmd = &Command::new("twingate").arg("status").output().unwrap();
