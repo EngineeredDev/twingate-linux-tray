@@ -1,10 +1,9 @@
-use std::{
-    io::{BufRead, BufReader, Read},
-    process::{Command, Stdio},
-};
+use std::{process::Command, str};
 
 use arboard::Clipboard;
+use regex::Regex;
 use serde::Deserialize;
+use serde_json::from_slice;
 use tauri::{
     menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
@@ -191,6 +190,59 @@ fn build_auth_menu(resource: &Resource, app: &AppHandle) -> Vec<MenuItem<tauri::
     }
 }
 
+fn check_auth_flow() -> bool {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let mut opened_url = false;
+
+    runtime.block_on(async move {
+        loop {
+            let output_str = str::from_utf8(
+                &Command::new("twingate-notifier")
+                    .arg("resources")
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .unwrap_or_default()
+            .to_lowercase();
+
+            match output_str {
+                s if s.contains("not-running") => {
+                    return true;
+                }
+                ref s if s.contains("authenticating") => {
+                    let re = Regex::new(
+                        r"https?://[\w.-]+(?:\.[\w\.-]+)+[\w\-\._~:/?#[\]@!$&'()*+,;=]+",
+                    )
+                    .expect("Failed to compile regex");
+                    if let Some(caps) = re.captures(&output_str) {
+                        if let Some(url) = caps.get(0) {
+                            if opened_url == false {
+                                let _ = Command::new("xdg-open")
+                                    .arg(url.as_str())
+                                    .output()
+                                    .expect("failed to execute process");
+                                opened_url = true;
+                            }
+                        } else {
+                            println!("No URL found.");
+                        }
+                    } else {
+                        println!("No URL found.");
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    return true;
+                }
+                _ => return true,
+            }
+        }
+    })
+}
+
 fn get_network_data() -> Option<Network> {
     let status_cmd = &Command::new("twingate").arg("status").output().unwrap();
     let status = std::str::from_utf8(&status_cmd.stdout).unwrap();
@@ -200,10 +252,21 @@ fn get_network_data() -> Option<Network> {
         return None;
     }
 
-    let mut tg_notifier = Command::new("twingate-notifier");
+    check_auth_flow();
 
-    // TODO: need to handle when twingate isn't started
-    Some(serde_json::from_slice(&tg_notifier.arg("resources").output().unwrap().stdout).unwrap())
+    let output = Command::new("twingate-notifier")
+        .arg("resources")
+        .output()
+        .unwrap();
+    let output_str = str::from_utf8(&output.stdout).unwrap_or_default();
+
+    match from_slice(&output_str.as_bytes()) {
+        Ok(network) => Some(network),
+        Err(_) => {
+            println!("Failed to parse JSON. {}", &output_str);
+            None
+        }
+    }
 }
 
 fn build_tray_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, tauri::Error> {
@@ -361,93 +424,19 @@ fn create_menu_event_handler(builder: TrayIconBuilder<tauri::Wry>) -> TrayIconBu
         }
         START_SERVICE_ID => {
             let shell = app.shell();
-            // shell.sidecar("pkexec").unwrap().args(["twingate", "start"]);
-            // let output = tauri::async_runtime::block_on(async move {
-            //     shell
-            //         .command("pkexec")
-            //         .args(["twingate", "start"])
-            //         .output()
-            //         .await
-            //         .unwrap()
-            // });
-            // if output.status.success() {
-            //     println!("Result: {:?}", String::from_utf8(output.stdout));
-            // } else {
-            //     println!("Exit with code: {}", output.status.code().unwrap());
-            // }
-            // let output = {
-            let sudo = match Command::new("which").arg("pkexec").output() {
-                Ok(output) => {
-                    if output.stdout.is_empty() {
-                        "sudo"
-                    } else {
-                        "pkexec"
-                    }
-                }
-                Err(_) => "sudo",
-            };
-
-            Command::new("pkexec")
-                .env_clear() // Important for Wayland compatibility
-                .env("DISPLAY", std::env::var("DISPLAY").unwrap())
-                .env("XAUTHORITY", std::env::var("XAUTHORITY").unwrap())
-                .arg("echo")
-                .arg("Hello")
-                .status()
-                .expect("Failed to execute command");
-
-            // Command::new(sudo).arg("twingate").arg("start").output()
-            // };
-            //
-            // Create command with piped stdout
-            let mut child = Command::new(sudo)
-                .arg("echo")
-                .arg("'start'")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
-                .spawn()
-                .expect("Failed to start command");
-
-            // Get stdout handle
-            let stdout = child.stdout.take().expect("Failed to get stdout handle");
-
-            // Create a buffered reader and stream the output line by line
-            let reader = BufReader::new(stdout);
-            println!("Command output:");
-            for line in reader.lines() {
-                match line {
-                    Ok(line) => println!("{}", line),
-                    Err(e) => eprintln!("Error reading line: {}", e),
-                }
+            let output = tauri::async_runtime::block_on(async move {
+                shell
+                    .command("pkexec")
+                    .args(["twingate", "start"])
+                    .output()
+                    .await
+                    .unwrap()
+            });
+            if output.status.success() {
+                println!("Result: {:?}", String::from_utf8(output.stdout));
+            } else {
+                println!("Exit with code: {}", output.status.code().unwrap());
             }
-
-            // Wait for the process to finish
-            let status = child.wait().expect("Failed to wait for command");
-            println!("Command exited with status: {}", status);
-
-            // println!(
-            //     "Command output:\n{}",
-            //     String::from_utf8_lossy(&output.unwrap().stdout)
-            // );
-
-            // if output.status.success() {
-            //     Ok(())
-            // } else {
-            //     let stderr = std::str::from_utf8(&output.stderr).unwrap_or("");
-            //     anyhow::bail!("{stderr}");
-            // }
-
-            // let output = Command::new("pkexec")
-            //     .arg("twingate")
-            //     .arg("start")
-            //     .output()
-            //     .unwrap();
-            //
-            // println!(
-            //     "Command output:\n{}",
-            //     String::from_utf8_lossy(&output.stdout)
-            // );
-            // println!("Exit status: {}", output.status);
 
             rebuild_tray_after_delay(app.app_handle().clone());
         }
