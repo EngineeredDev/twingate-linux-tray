@@ -16,11 +16,6 @@ node_modules/
 .vscode/launch.json
 .vscode/tasks.json
 
-# npm, yarn and bun lock files
-package-lock.json
-yarn.lock
-bun.lockb
-
 # rust compiled folders
 target/
 
