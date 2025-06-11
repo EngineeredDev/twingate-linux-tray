@@ -72,7 +72,6 @@ const TWINGATE_TRAY_ID: &str = "twingate_tray";
 const USER_STATUS_ID: &str = "user_status";
 const START_SERVICE_ID: &str = "start_service";
 const STOP_SERVICE_ID: &str = "stop_service";
-const NUMBER_RESOURCES_ID: &str = "num_resources";
 const RESOURCE_ADDRESS_ID: &str = "resource_address";
 const COPY_ADDRESS_ID: &str = "copy_address";
 const AUTHENTICATE_ID: &str = "authenticate";
@@ -194,13 +193,10 @@ async fn check_auth_flow() -> bool {
     let mut opened_url = false;
 
     // Add a small delay to allow the service to initialize
-    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
 
     loop {
-        let output = Command::new("twingate")
-            .arg("status")
-            .output()
-            .unwrap();
+        let output = Command::new("twingate").arg("status").output().unwrap();
         let output_str = str::from_utf8(&output.stdout).unwrap_or_default();
 
         // Debug logging to understand what status strings are being returned
@@ -211,10 +207,15 @@ async fn check_auth_flow() -> bool {
                 println!("Debug: Service not running, returning true");
                 return true;
             }
+            s if s.to_lowercase().contains("online") => {
+                println!("Debug: Service is online");
+                return true;
+            }
             ref s if s.to_lowercase().contains("authenticating") => {
                 println!("Debug: Found authenticating status, looking for URL");
-                let re = Regex::new(r"https?://[\w.-]+(?:\.[\w\.-]+)+[\w\-\._~:/?#\[\]@!$&'()*+,;=%]+")
-                    .expect("Failed to compile regex");
+                let re =
+                    Regex::new(r"https?://[\w.-]+(?:\.[\w\.-]+)+[\w\-\._~:/?#\[\]@!$&'()*+,;=%]+")
+                        .expect("Failed to compile regex");
                 if let Some(caps) = re.captures(&output_str) {
                     if let Some(url) = caps.get(0) {
                         if !opened_url {
@@ -402,13 +403,6 @@ fn rebuild_tray_after_delay(app_handle: AppHandle) {
                         // TODO: create entire tray?
                     }
                 }
-                // Set the same on_menu_event handler
-                // let builder = create_menu_event_handler(builder);
-                //
-                // // Build the new tray
-                // if let Err(e) = builder.build(&app_handle) {
-                //     eprintln!("Failed to rebuild tray: {}", e);
-                // }
             }
             Err(e) => {
                 eprintln!("Failed to build tray menu: {}", e);
@@ -421,7 +415,7 @@ fn create_menu_event_handler(builder: TrayIconBuilder<tauri::Wry>) -> TrayIconBu
     builder.on_menu_event(|app, event| {
         let event_id = event.id.clone();
         match event_id.as_ref() {
-            "quit" => {
+            QUIT_ID => {
                 println!("quit menu item was clicked");
                 app.exit(0);
             }
@@ -443,6 +437,22 @@ fn create_menu_event_handler(builder: TrayIconBuilder<tauri::Wry>) -> TrayIconBu
                 rebuild_tray_after_delay(app.app_handle().clone());
             }
             STOP_SERVICE_ID => {
+                let shell = app.shell();
+                let output = tauri::async_runtime::block_on(async move {
+                    shell
+                        .command("pkexec")
+                        .args(["twingate", "stop"])
+                        .output()
+                        .await
+                        .unwrap()
+                });
+
+                if output.status.success() {
+                    println!("Result: {:?}", String::from_utf8(output.stdout));
+                } else {
+                    println!("Exit with code: {}", output.status.code().unwrap());
+                }
+
                 rebuild_tray_after_delay(app.app_handle().clone());
             }
             address_id if address_id.contains(COPY_ADDRESS_ID) => {
@@ -472,8 +482,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![greet])
         .setup(|app| {
             let menu = tauri::async_runtime::block_on(build_tray_menu(&app.app_handle()))?;
-
+            let icon = app.default_window_icon().unwrap().clone();
             let tray_builder = TrayIconBuilder::with_id(TWINGATE_TRAY_ID)
+                .icon(icon)
                 .menu(&menu)
                 .show_menu_on_left_click(true);
 
