@@ -27,3 +27,4 @@ arboard = "3.4.1"
 chrono = "0.4.40"
 tokio = { version = "1", features = ["time"] }
 regex = "1.5.4"
+tauri-plugin-single-instance = "2"

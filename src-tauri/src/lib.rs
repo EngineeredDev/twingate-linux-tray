@@ -10,6 +10,7 @@ use tauri::{
     AppHandle, Manager,
 };
 use tauri_plugin_shell::ShellExt;
+use tauri_plugin_single_instance::init as single_instance_init;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Network {
@@ -477,6 +478,11 @@ fn create_menu_event_handler(builder: TrayIconBuilder<tauri::Wry>) -> TrayIconBu
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(single_instance_init(|app, _argv, _cwd| {
+            // When a second instance is attempted, just ignore it
+            // The existing instance with its tray will continue running
+            println!("Second instance attempted - ignoring");
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![greet])
