@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "Capability for the main window with granular Twingate CLI permissions",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -10,9 +10,9 @@
       "identifier": "shell:allow-execute",
       "allow": [
         {
-          "name": "twingate-notifier",
-          "cmd": "twingate-notifier",
-          "args": ["resources"]
+          "name": "twingate-status",
+          "cmd": "twingate",
+          "args": ["status"]
         },
         {
           "name": "twingate-start",
@@ -20,19 +20,39 @@
           "args": ["start"]
         },
         {
-          "name": "exec-sh",
-          "cmd": "sh",
-          "args": [
-            "-c",
-            {
-              "validator": "\\S+"
-            }
-          ]
+          "name": "twingate-stop",
+          "cmd": "twingate",
+          "args": ["stop"]
         },
         {
-          "name": "pkexec",
+          "name": "twingate-auth",
+          "cmd": "twingate",
+          "args": ["auth", { "validator": "\\S+" }]
+        },
+        {
+          "name": "twingate-notifier-resources",
+          "cmd": "twingate-notifier",
+          "args": ["resources"]
+        },
+        {
+          "name": "pkexec-twingate-start",
           "cmd": "pkexec",
           "args": ["twingate", "start"]
+        },
+        {
+          "name": "pkexec-twingate-stop",
+          "cmd": "pkexec",
+          "args": ["twingate", "stop"]
+        },
+        {
+          "name": "pkexec-twingate-auth",
+          "cmd": "pkexec",
+          "args": ["twingate", "auth", { "validator": "\\S+" }]
+        },
+        {
+          "name": "xdg-open-url",
+          "cmd": "xdg-open",
+          "args": [{ "validator": "https?://[\\w.-]+(?:\\.[\\w.-]+)+[\\w\\-._~:/?#\\[\\]@!$&'()*+,;=%]+" }]
         }
       ]
     },
@@ -41,4 +61,3 @@
     "shell:allow-stdin-write"
   ]
 }
-
