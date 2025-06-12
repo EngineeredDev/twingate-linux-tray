@@ -17,7 +17,7 @@ use error::{Result, TwingateError};
 use network::{get_network_data, get_network_data_with_retry};
 use state::{AppState, AppStateType};
 use tray::{
-    build_tray_menu, get_address_from_resource, MenuAction, AUTHENTICATE_ID, COPY_ADDRESS_ID,
+    build_tray_menu, build_disconnected_menu, get_address_from_resource, MenuAction, AUTHENTICATE_ID, COPY_ADDRESS_ID,
     TWINGATE_TRAY_ID,
 };
 
@@ -310,8 +310,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![greet])
         .setup(|app| {
             println!("Initializing Twingate Linux application...");
+            log::info!("Starting Twingate Linux application setup");
 
             let app_handle = app.app_handle().clone();
+            
+            log::debug!("Attempting to retrieve initial network data");
             
             // Allow more time for service initialization during startup
             let network_data = tauri::async_runtime::block_on(async {
@@ -396,16 +399,40 @@ pub fn run() {
                 }
             });
 
-            let menu =
-                tauri::async_runtime::block_on(build_tray_menu(app.app_handle(), network_data))
-                    .map_err(|e| {
-                        eprintln!("Error: Failed to build initial tray menu: {}", e);
-                        e
-                    })?;
+            log::debug!("Building initial tray menu");
+            let menu = match tauri::async_runtime::block_on(build_tray_menu(app.app_handle(), network_data)) {
+                Ok(m) => {
+                    log::debug!("Successfully built initial tray menu");
+                    m
+                }
+                Err(e) => {
+                    log::error!("Failed to build initial tray menu: {}", e);
+                    eprintln!("Error: Failed to build initial tray menu: {}", e);
+                    // Create a minimal fallback menu
+                    log::debug!("Creating minimal fallback menu");
+                    let fallback_result = tauri::async_runtime::block_on(async {
+                        build_disconnected_menu(app.app_handle()).await
+                    });
+                    
+                    match fallback_result {
+                        Ok(m) => m,
+                        Err(e2) => {
+                            log::error!("Failed to build even fallback menu: {}", e2);
+                            eprintln!("Critical: Failed to build fallback menu: {}", e2);
+                            return Err(Box::new(tauri::Error::InvalidIcon(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                format!("Failed to build fallback menu: {}", e2),
+                            ))));
+                        }
+                    }
+                }
+            };
 
+            log::debug!("Getting default window icon");
             let icon = app
                 .default_window_icon()
                 .ok_or_else(|| {
+                    log::error!("No default window icon found");
                     eprintln!("Error: No default window icon found");
                     tauri::Error::InvalidIcon(std::io::Error::new(
                         std::io::ErrorKind::NotFound,
@@ -414,6 +441,7 @@ pub fn run() {
                 })?
                 .clone();
 
+            log::debug!("Building tray icon");
             let tray_builder = TrayIconBuilder::with_id(TWINGATE_TRAY_ID)
                 .icon(icon)
                 .menu(&menu)
@@ -421,12 +449,17 @@ pub fn run() {
 
             let tray_builder = create_menu_event_handler(tray_builder);
 
-            tray_builder.build(app).map_err(|e| {
-                eprintln!("Error: Failed to build tray icon: {}", e);
-                e
-            })?;
-
-            println!("Twingate Linux application initialized successfully");
+            match tray_builder.build(app) {
+                Ok(_) => {
+                    log::info!("Successfully created tray icon");
+                    println!("Twingate Linux application initialized successfully");
+                }
+                Err(e) => {
+                    log::error!("Failed to build tray icon: {}", e);
+                    eprintln!("Error: Failed to build tray icon: {}", e);
+                    return Err(Box::new(e));
+                }
+            }
 
             #[cfg(debug_assertions)]
             {

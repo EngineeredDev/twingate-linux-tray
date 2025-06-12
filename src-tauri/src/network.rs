@@ -235,6 +235,7 @@ pub async fn get_network_data_with_retry(app_handle: &tauri::AppHandle, max_retr
         // Check if we've exhausted retries
         if retry_count >= max_retries {
             log::warn!("Exhausted {} retries attempting to get network data", max_retries);
+            log::debug!("Final service state before giving up: {:?}", get_service_state(app_handle).await);
             return Err(TwingateError::RetryLimitExceeded(
                 format!("Failed to get network data after {} attempts", max_retries + 1)
             ));

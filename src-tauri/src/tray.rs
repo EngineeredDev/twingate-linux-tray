@@ -162,7 +162,7 @@ async fn build_connected_menu(app: &AppHandle, network: &Network) -> Result<Menu
     Ok(Menu::with_items(app, &menu_items[..])?)
 }
 
-async fn build_disconnected_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>> {
+pub async fn build_disconnected_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>> {
     let start_item =
         MenuItem::with_id(app, START_SERVICE_ID, "Start Twingate", true, None::<&str>)?;
 
