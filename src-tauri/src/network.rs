@@ -25,21 +25,37 @@ impl ServiceState {
         
         log::debug!("Parsing service state from output: '{}'", output);
         
-        if output.contains("not-running") || output.contains("offline") || output.contains("stopped") {
+        // Check for authentication required states first (highest priority)
+        if output.contains("authentication is required") ||
+           output.contains("auth required") ||
+           output.contains("authentication required") ||
+           output.contains("user authentication is required") ||
+           output.contains("needs authentication") ||
+           output.contains("not authenticated") ||
+           output.contains("authentication needed") ||
+           output.contains("please authenticate") ||
+           output.contains("requires authentication") ||
+           (output.contains("auth") && (output.contains("required") || output.contains("needed") || output.contains("expired"))) {
+            log::debug!("Service state detected: AuthRequired");
+            return ServiceState::AuthRequired;
+        }
+        
+        if output.contains("not-running") || output.contains("offline") || output.contains("stopped") || 
+           output.contains("not running") || output.contains("inactive") || output.contains("dead") {
             log::debug!("Service state detected: NotRunning");
             ServiceState::NotRunning
-        } else if output.contains("starting") || output.contains("initializing") || output.contains("booting") {
+        } else if output.contains("starting") || output.contains("initializing") || output.contains("booting") ||
+                  output.contains("loading") || output.contains("launching") {
             log::debug!("Service state detected: Starting");
             ServiceState::Starting
-        } else if output.contains("connecting") || output.contains("authenticating") || output.contains("handshake") {
+        } else if output.contains("connecting") || output.contains("authenticating") || output.contains("handshake") ||
+                  output.contains("establishing") || output.contains("negotiating") {
             log::debug!("Service state detected: Connecting");
             ServiceState::Connecting
-        } else if output.contains("online") || output.contains("connected") || output.contains("ready") {
+        } else if output.contains("online") || output.contains("connected") || output.contains("ready") ||
+                  output.contains("active") || output.contains("established") {
             log::debug!("Service state detected: Connected");
             ServiceState::Connected
-        } else if output.contains("auth") && (output.contains("required") || output.contains("needed") || output.contains("expired")) {
-            log::debug!("Service state detected: AuthRequired");
-            ServiceState::AuthRequired
         } else {
             log::debug!("Service state unknown, defaulting to Connecting for: '{}'", output);
             ServiceState::Connecting
@@ -90,10 +106,21 @@ async fn try_get_resources_data(app_handle: &tauri::AppHandle) -> Result<Option<
         return Err(TwingateError::ServiceConnecting);
     }
     
+    // Check for authentication-related responses
+    if trimmed_output.to_lowercase().contains("authentication") ||
+       trimmed_output.to_lowercase().contains("auth required") ||
+       trimmed_output.to_lowercase().contains("not authenticated") ||
+       trimmed_output.to_lowercase().contains("please authenticate") ||
+       trimmed_output.to_lowercase().contains("login required") {
+        log::debug!("Authentication required based on resources output: '{}'", trimmed_output);
+        return Err(TwingateError::AuthRequired("Authentication required based on resources output".to_string()));
+    }
+    
     // Check for known transitional state responses
     let transitional_responses = [
         "not connected", "offline", "connecting", "authenticating", 
-        "starting", "initializing", "waiting", "loading"
+        "starting", "initializing", "waiting", "loading", "establishing",
+        "handshaking", "negotiating", "not ready", "unavailable"
     ];
     
     for response in &transitional_responses {
@@ -106,23 +133,27 @@ async fn try_get_resources_data(app_handle: &tauri::AppHandle) -> Result<Option<
     // Check if output looks like JSON (starts with { or [)
     if !trimmed_output.starts_with('{') && !trimmed_output.starts_with('[') {
         log::warn!("Resources output doesn't appear to be JSON: '{}'", trimmed_output);
+        
+        // If it contains authentication keywords, return AuthRequired
+        if trimmed_output.to_lowercase().contains("auth") {
+            return Err(TwingateError::AuthRequired("Non-JSON output contains auth keyword".to_string()));
+        }
+        
         return Err(TwingateError::ServiceConnecting);
     }
-    
 
-     match from_slice::<Option<Network>>(trimmed_output.as_bytes()) {
-         Ok(network) => {
-             log::debug!("Successfully parsed network data with {} resources", 
-                 if let Some(ref n) = network { n.resources.len() } else { 0 });
-             Ok(network)
-         }
-         Err(e) => {
-             log::warn!("Failed to parse JSON from resources output: '{}'. Parse error: {}", 
-                 trimmed_output, e);
-             Err(TwingateError::JsonParseError(e))
-         }
-     }
-    
+    match from_slice::<Option<Network>>(trimmed_output.as_bytes()) {
+        Ok(network) => {
+            log::debug!("Successfully parsed network data with {} resources", 
+                if let Some(ref n) = network { n.resources.len() } else { 0 });
+            Ok(network)
+        }
+        Err(e) => {
+            log::warn!("Failed to parse JSON from resources output: '{}'. Parse error: {}", 
+                trimmed_output, e);
+            Err(TwingateError::JsonParseError(e))
+        }
+    }
 }
 
 pub async fn get_network_data(app_handle: &tauri::AppHandle) -> Result<Option<Network>> {
@@ -138,11 +169,16 @@ pub async fn get_network_data_with_retry(app_handle: &tauri::AppHandle, max_retr
     loop {
         log::debug!("Network data attempt {} of {}", retry_count + 1, max_retries + 1);
         
+
         // First check the service state for better decision making
         match get_service_state(app_handle).await {
             Ok(ServiceState::NotRunning) => {
                 log::debug!("Service not running - returning None");
                 return Ok(None);
+            }
+            Ok(ServiceState::AuthRequired) => {
+                log::debug!("Service requires authentication");
+                return Err(TwingateError::AuthRequired("Service state indicates authentication required".to_string()));
             }
             Ok(ServiceState::Connected) => {
                 log::debug!("Service reports connected state, attempting to get resources");
@@ -151,6 +187,10 @@ pub async fn get_network_data_with_retry(app_handle: &tauri::AppHandle, max_retr
                     Ok(network) => {
                         log::debug!("Successfully retrieved network data on attempt {}", retry_count + 1);
                         return Ok(network);
+                    }
+                    Err(TwingateError::AuthRequired(_)) => {
+                        log::debug!("Resources indicate authentication required");
+                        return Err(TwingateError::AuthRequired("Resources indicate authentication required".to_string()));
                     }
                     Err(TwingateError::ServiceConnecting) => {
                         log::debug!("Resources not ready despite connected status, service may still be initializing");
@@ -162,7 +202,7 @@ pub async fn get_network_data_with_retry(app_handle: &tauri::AppHandle, max_retr
                     }
                 }
             }
-            Ok(ServiceState::Starting) | Ok(ServiceState::Connecting) | Ok(ServiceState::AuthRequired) => {
+            Ok(ServiceState::Starting) | Ok(ServiceState::Connecting) => {
                 log::debug!("Service in transitional state, will retry after delay");
                 // Service is in a transitional state, we should retry
             }
@@ -174,18 +214,23 @@ pub async fn get_network_data_with_retry(app_handle: &tauri::AppHandle, max_retr
                         log::debug!("Fallback resources retrieval successful on attempt {}", retry_count + 1);
                         return Ok(network);
                     }
+                    Err(TwingateError::AuthRequired(_)) => {
+                        log::debug!("Fallback resources indicate authentication required");
+                        return Err(TwingateError::AuthRequired("Fallback resources indicate authentication required".to_string()));
+                    }
                     Err(TwingateError::ServiceConnecting) => {
                         log::debug!("Fallback resources not ready, will retry");
                         // Fall through to retry logic
                     }
                     Err(resources_err) => {
-                        log::error!("Both status and resources failed. Status error: {}, Resources error: {}", 
+                        log::error!("Both status and resources failed. Status error: {}, Resources error: {}",
                             e, resources_err);
                         return Err(e);
                     }
                 }
             }
         }
+
         
         // Check if we've exhausted retries
         if retry_count >= max_retries {

@@ -11,7 +11,7 @@ mod network;
 mod state;
 mod tray;
 
-use auth::start_resource_auth;
+use auth::{handle_service_auth, start_resource_auth};
 use commands::greet;
 use error::{Result, TwingateError};
 use network::{get_network_data, get_network_data_with_retry};
@@ -194,6 +194,14 @@ async fn handle_menu_action(app_handle: &AppHandle, action: MenuAction) -> Resul
                     if output.status.success() {
                         println!("Successfully started Twingate service");
                         println!("Output: {}", String::from_utf8_lossy(&output.stdout));
+                        
+                        // Check if authentication is required and handle it
+                        log::debug!("Checking if service requires authentication");
+                        if let Err(e) = auth::handle_service_auth(app_handle).await {
+                            log::error!("Failed to handle service authentication: {}", e);
+                            eprintln!("Warning: Failed to handle service authentication: {}", e);
+                            // Don't return error here - service is started, just auth failed
+                        }
                     } else {
                         let error_msg = String::from_utf8_lossy(&output.stderr);
                         eprintln!(
@@ -247,6 +255,7 @@ async fn handle_menu_action(app_handle: &AppHandle, action: MenuAction) -> Resul
                 }
             }
         }
+
         MenuAction::CopyAddress(resource_id) => {
             println!("Copying address for resource: {}", resource_id);
             let address_id = format!("{}-{}", COPY_ADDRESS_ID, resource_id);
