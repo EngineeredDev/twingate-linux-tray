@@ -33,6 +33,21 @@ impl AppState {
             None => true,
         }
     }
+
+    pub fn is_network_data_stale(&self, threshold: std::time::Duration) -> bool {
+        match self.last_update {
+            Some(last) => last.elapsed() > threshold,
+            None => true,
+        }
+    }
+
+    pub fn has_network_data(&self) -> bool {
+        self.network.is_some()
+    }
+
+    pub fn get_service_status(&self) -> bool {
+        self.is_service_running
+    }
 }
 
 pub type AppStateType = Mutex<AppState>;

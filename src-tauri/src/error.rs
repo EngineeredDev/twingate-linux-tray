@@ -3,7 +3,7 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum TwingateError {
     #[error("Command execution failed: {0}")]
-    CommandError(#[from] std::io::Error),
+    CommandError(#[from] tauri_plugin_shell::Error),
 
     #[allow(dead_code)]
     #[error("Authentication required for resource: {0}")]
@@ -45,8 +45,17 @@ pub enum TwingateError {
     #[error("Configuration error: {0}")]
     ConfigurationError(String),
 
-    #[error("Shell plugin error: {0}")]
-    ShellPluginError(#[from] tauri_plugin_shell::Error),
+    #[error("Service connecting - authentication in progress")]
+    ServiceConnecting,
+
+    #[error("Authentication state transition in progress")]
+    AuthStateTransition,
+
+    #[error("Retry limit exceeded: {0}")]
+    RetryLimitExceeded(String),
+
+    #[error("Service initialization in progress - data not yet available")]
+    ServiceInitializing,
 }
 
 pub type Result<T> = std::result::Result<T, TwingateError>;
