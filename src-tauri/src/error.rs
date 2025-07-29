@@ -1,67 +1,105 @@
 use thiserror::Error;
 
+/// Comprehensive error types for Twingate operations
 #[derive(Error, Debug)]
 pub enum TwingateError {
-    #[error("Command execution failed: {0}")]
-    CommandError(#[from] tauri_plugin_shell::Error),
-
-    #[allow(dead_code)]
-    #[error("Authentication required for resource: {0}")]
-    AuthRequired(String),
-
-    #[error("Service not running")]
+    // Service-related errors
+    #[error("Twingate service is not running")]
     ServiceNotRunning,
-
-    #[error("Network data parsing failed: {0}")]
-    NetworkDataParseError(String),
-
-    #[error("JSON parsing failed: {0}")]
-    JsonParseError(#[from] serde_json::Error),
-
-    #[error("Resource not found: {0}")]
-    ResourceNotFound(String),
-
-    #[error("Clipboard operation failed: {0}")]
-    ClipboardError(String),
-
-    #[error("Tray menu operation failed: {0}")]
-    TrayMenuError(#[from] tauri::Error),
-
-    #[error("Shell command failed with exit code {code}: {message}")]
-    ShellCommandFailed { code: i32, message: String },
-
-    #[allow(dead_code)]
-    #[error("Authentication flow timeout")]
-    AuthFlowTimeout,
-
-    #[error("Invalid resource state: {0}")]
-    InvalidResourceState(String),
-
-    #[allow(dead_code)]
-    #[error("Permission denied: {0}")]
-    PermissionDenied(String),
-
-    #[allow(dead_code)]
-    #[error("Configuration error: {0}")]
-    ConfigurationError(String),
-
-    #[error("Service connecting - authentication in progress")]
+    
+    
+    #[error("Service is connecting to Twingate network")]
     ServiceConnecting,
-
-    #[error("Authentication state transition in progress")]
-    AuthStateTransition,
-
-    #[error("Retry limit exceeded: {0}")]
-    RetryLimitExceeded(String),
-
-    #[error("Service initialization in progress - data not yet available")]
-    ServiceInitializing,
+    
+    #[error("Service requires authentication")]
+    AuthenticationRequired,
+    
+    #[error("Authentication flow timed out after {seconds} seconds")]
+    AuthenticationTimeout { seconds: u64 },
+    
+    // Command execution errors
+    #[error("Shell command '{command}' failed with exit code {code}: {stderr}")]
+    CommandFailed {
+        command: String,
+        code: i32,
+        stderr: String,
+    },
+    
+    #[error("Command execution error: {source}")]
+    CommandExecutionError {
+        #[from]
+        source: tauri_plugin_shell::Error,
+    },
+    
+    // Data processing errors
+    
+    #[error("JSON deserialization failed: {source}")]
+    JsonError {
+        #[from]
+        source: serde_json::Error,
+    },
+    
+    #[error("Invalid UTF-8 in command output")]
+    InvalidUtf8,
+    
+    // Resource-related errors
+    #[error("Resource '{id}' not found")]
+    ResourceNotFound { id: String },
+    
+    #[error("Invalid resource ID format: {id}")]
+    InvalidResourceId { id: String },
+    
+    // System integration errors
+    #[error("Clipboard operation failed: {details}")]
+    ClipboardError { details: String },
+    
+    #[error("System tray operation failed: {source}")]
+    TrayError {
+        #[from]
+        source: tauri::Error,
+    },
+    
+    
+    // Retry and timeout errors
+    #[error("Operation timed out after {attempts} attempts")]
+    RetryLimitExceeded { attempts: u32 },
+    
 }
 
 pub type Result<T> = std::result::Result<T, TwingateError>;
 
+// Error conversions
 impl From<arboard::Error> for TwingateError {
     fn from(err: arboard::Error) -> Self {
-        TwingateError::ClipboardError(err.to_string())
+        Self::ClipboardError {
+            details: err.to_string(),
+        }
     }
+}
+
+impl From<std::str::Utf8Error> for TwingateError {
+    fn from(_: std::str::Utf8Error) -> Self {
+        Self::InvalidUtf8
+    }
+}
+
+// Helper methods for common error scenarios
+impl TwingateError {
+    pub fn command_failed(command: impl Into<String>, code: i32, stderr: impl Into<String>) -> Self {
+        Self::CommandFailed {
+            command: command.into(),
+            code,
+            stderr: stderr.into(),
+        }
+    }
+    
+    pub fn resource_not_found(id: impl Into<String>) -> Self {
+        Self::ResourceNotFound { id: id.into() }
+    }
+    
+    pub fn invalid_resource_id(id: impl Into<String>) -> Self {
+        Self::InvalidResourceId { id: id.into() }
+    }
+    
+    
 }

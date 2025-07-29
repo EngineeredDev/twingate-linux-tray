@@ -15,7 +15,7 @@ pub async fn start_resource_auth(app_handle: &tauri::AppHandle, auth_id: &str) -
     let resource_id = auth_id
         .split("-")
         .last()
-        .ok_or_else(|| TwingateError::InvalidResourceState("Invalid auth ID format".to_string()))?;
+        .ok_or_else(|| TwingateError::invalid_resource_id(auth_id))?;
 
     log::debug!("Extracted resource_id: {}", resource_id);
 
@@ -30,7 +30,7 @@ pub async fn start_resource_auth(app_handle: &tauri::AppHandle, auth_id: &str) -
         .resources
         .iter()
         .position(|x| x.id == resource_id)
-        .ok_or_else(|| TwingateError::ResourceNotFound(resource_id.to_string()))?;
+        .ok_or_else(|| TwingateError::resource_not_found(resource_id))?;
 
     let resource_name = &n.resources[idx].name;
     log::debug!("Found resource: {} at index {}", resource_name, idx);
@@ -72,10 +72,7 @@ pub async fn handle_service_auth(app_handle: &tauri::AppHandle) -> Result<()> {
         .output()
         .await?;
     
-    let status_str = str::from_utf8(&status_output.stdout).map_err(|e| {
-        log::error!("Invalid UTF-8 in status output: {}", e);
-        TwingateError::NetworkDataParseError("Invalid UTF-8 in status output".to_string())
-    })?;
+    let status_str = str::from_utf8(&status_output.stdout)?;
     
     log::debug!("Service status output: {}", status_str);
     
@@ -99,10 +96,7 @@ pub async fn handle_service_auth(app_handle: &tauri::AppHandle) -> Result<()> {
         .output()
         .await?;
     
-    let resources_str = str::from_utf8(&resources_output.stdout).map_err(|e| {
-        log::error!("Invalid UTF-8 in resources output: {}", e);
-        TwingateError::NetworkDataParseError("Invalid UTF-8 in resources output".to_string())
-    })?;
+    let resources_str = str::from_utf8(&resources_output.stdout)?;
     
     log::debug!("Resources output: {}", resources_str);
     
@@ -135,10 +129,7 @@ pub async fn handle_service_auth(app_handle: &tauri::AppHandle) -> Result<()> {
             .output()
             .await?;
         
-        let auth_str = str::from_utf8(&auth_output.stdout).map_err(|e| {
-            log::error!("Invalid UTF-8 in auth output: {}", e);
-            TwingateError::NetworkDataParseError("Invalid UTF-8 in auth output".to_string())
-        })?;
+        let auth_str = str::from_utf8(&auth_output.stdout)?;
         
         log::debug!("Auth command output: {}", auth_str);
         
@@ -213,7 +204,7 @@ pub async fn handle_service_auth(app_handle: &tauri::AppHandle) -> Result<()> {
                 
                 if let Err(e) = open_result {
                     log::error!("Alternative method also failed: {}", e);
-                    return Err(TwingateError::CommandError(e));
+                    return Err(TwingateError::from(e));
                 }
             }
         }
@@ -269,16 +260,17 @@ async fn execute_auth_command(app_handle: &tauri::AppHandle, resource_name: &str
                     output.status.code()
                 );
                 log::error!("{}", error_msg);
-                Err(TwingateError::ShellCommandFailed {
-                    code: output.status.code().unwrap_or(-1),
-                    message: error_msg,
-                })
+                Err(TwingateError::command_failed(
+                    "twingate auth",
+                    output.status.code().unwrap_or(-1),
+                    error_msg,
+                ))
             }
         }
         Err(e) => {
             let error_msg = format!("Failed to execute authentication command for resource {}: {}", resource_name, e);
             log::error!("{}", error_msg);
-            Err(TwingateError::CommandError(e))
+            Err(TwingateError::from(e))
         }
     }
 }
@@ -318,59 +310,4 @@ async fn wait_for_auth_completion(app_handle: &tauri::AppHandle) -> Result<()> {
     }
 }
 
-pub async fn check_auth_status(app_handle: &tauri::AppHandle) -> Result<bool> {
-    log::debug!("Checking authentication status");
-    
-    match get_network_data_with_retry(app_handle, 1).await {
-        Ok(Some(_)) => {
-            log::debug!("Authentication status: connected");
-            Ok(true)
-        }
-        Ok(None) => {
-            log::debug!("Authentication status: service not running");
-            Ok(false)
-        }
-        Err(TwingateError::ServiceConnecting) | Err(TwingateError::AuthStateTransition) => {
-            log::debug!("Authentication status: in progress");
-            Ok(false)
-        }
-        Err(e) => {
-            log::warn!("Error checking authentication status: {}", e);
-            Ok(false)
-        }
-    }
-}
 
-pub async fn retry_auth_with_backoff<F, Fut>(
-    operation: F,
-    max_retries: u32,
-    base_delay_ms: u64,
-) -> Result<()>
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = Result<()>>,
-{
-    let mut retry_count = 0;
-    let mut delay_ms = base_delay_ms;
-    
-    loop {
-        match operation().await {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                if retry_count >= max_retries {
-                    log::error!("Operation failed after {} retries: {}", max_retries, e);
-                    return Err(TwingateError::RetryLimitExceeded(
-                        format!("Operation failed after {} attempts: {}", max_retries + 1, e)
-                    ));
-                }
-                
-                log::debug!("Operation failed (attempt {} of {}): {}. Retrying in {}ms", 
-                    retry_count + 1, max_retries + 1, e, delay_ms);
-                
-                sleep(Duration::from_millis(delay_ms)).await;
-                retry_count += 1;
-                delay_ms = std::cmp::min(delay_ms * 2, 10000); // Cap at 10 seconds
-            }
-        }
-    }
-}

@@ -1,53 +1,70 @@
 use crate::models::Network;
-use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
-#[derive(Default)]
+/// Service connection status
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceStatus {
+    /// Service is not running
+    NotRunning,
+    /// Service is connected and authenticated
+    Connected,
+}
+
+impl Default for ServiceStatus {
+    fn default() -> Self {
+        Self::NotRunning
+    }
+}
+
+/// Application state with proper async synchronization
+#[derive(Debug, Default)]
 pub struct AppState {
-    pub network: Option<Network>,
-    pub is_service_running: bool,
-    pub last_update: Option<std::time::Instant>,
+    /// Current network data, if available
+    network: Option<Network>,
+    /// Current service status
+    service_status: ServiceStatus,
+    /// Timestamp of last successful data update
+    last_update: Option<Instant>,
+    /// Whether a refresh operation is currently in progress
+    refreshing: bool,
 }
 
 impl AppState {
     pub fn new() -> Self {
-        Self {
-            network: None,
-            is_service_running: false,
-            last_update: None,
-        }
+        Self::default()
     }
-
-    pub fn update_network(&mut self, network: Option<Network>) {
-        self.is_service_running = network.is_some();
-        self.network = network;
-        self.last_update = Some(std::time::Instant::now());
-    }
-
-    pub fn get_network(&self) -> Option<&Network> {
+    
+    // Network data access
+    pub fn network(&self) -> Option<&Network> {
         self.network.as_ref()
     }
-
-    pub fn should_refresh(&self, threshold: std::time::Duration) -> bool {
+    
+    
+    // State update methods
+    pub fn update_network(&mut self, network: Option<Network>) {
+        let has_data = network.is_some();
+        self.network = network;
+        self.service_status = if has_data {
+            ServiceStatus::Connected
+        } else {
+            ServiceStatus::NotRunning
+        };
+        self.last_update = Some(Instant::now());
+        self.refreshing = false;
+    }
+    
+    
+    // Cache management
+    pub fn is_stale(&self, threshold: Duration) -> bool {
         match self.last_update {
             Some(last) => last.elapsed() > threshold,
             None => true,
         }
     }
-
-    pub fn is_network_data_stale(&self, threshold: std::time::Duration) -> bool {
-        match self.last_update {
-            Some(last) => last.elapsed() > threshold,
-            None => true,
-        }
+    
+    pub fn should_refresh(&self, threshold: Duration) -> bool {
+        !self.refreshing && self.is_stale(threshold)
     }
-
-    pub fn has_network_data(&self) -> bool {
-        self.network.is_some()
-    }
-
-    pub fn get_service_status(&self) -> bool {
-        self.is_service_running
-    }
+    
 }
 
-pub type AppStateType = Mutex<AppState>;

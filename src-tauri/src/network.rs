@@ -69,10 +69,7 @@ async fn get_service_state(app_handle: &tauri::AppHandle) -> Result<ServiceState
     
     let status_output = shell.command("twingate").args(["status"]).output().await?;
     
-    let status = std::str::from_utf8(&status_output.stdout).map_err(|e| {
-        log::error!("Invalid UTF-8 in status output: {}", e);
-        TwingateError::NetworkDataParseError("Invalid UTF-8 in status output".to_string())
-    })?;
+    let status = std::str::from_utf8(&status_output.stdout)?;
     
     log::debug!("Raw twingate status output: '{}'", status.trim());
     
@@ -92,10 +89,7 @@ async fn try_get_resources_data(app_handle: &tauri::AppHandle) -> Result<Option<
         .output()
         .await?;
     
-    let output_str = str::from_utf8(&resources_output.stdout).map_err(|e| {
-        log::error!("Invalid UTF-8 in resources output: {}", e);
-        TwingateError::NetworkDataParseError("Invalid UTF-8 in resources output".to_string())
-    })?;
+    let output_str = str::from_utf8(&resources_output.stdout)?;
     
     let trimmed_output = output_str.trim();
     log::debug!("Raw resources command output (length: {}): '{}'", trimmed_output.len(), trimmed_output);
@@ -113,7 +107,7 @@ async fn try_get_resources_data(app_handle: &tauri::AppHandle) -> Result<Option<
        trimmed_output.to_lowercase().contains("please authenticate") ||
        trimmed_output.to_lowercase().contains("login required") {
         log::debug!("Authentication required based on resources output: '{}'", trimmed_output);
-        return Err(TwingateError::AuthRequired("Authentication required based on resources output".to_string()));
+        return Err(TwingateError::AuthenticationRequired);
     }
     
     // Check for known transitional state responses
@@ -136,7 +130,7 @@ async fn try_get_resources_data(app_handle: &tauri::AppHandle) -> Result<Option<
         
         // If it contains authentication keywords, return AuthRequired
         if trimmed_output.to_lowercase().contains("auth") {
-            return Err(TwingateError::AuthRequired("Non-JSON output contains auth keyword".to_string()));
+            return Err(TwingateError::AuthenticationRequired);
         }
         
         return Err(TwingateError::ServiceConnecting);
@@ -151,7 +145,7 @@ async fn try_get_resources_data(app_handle: &tauri::AppHandle) -> Result<Option<
         Err(e) => {
             log::warn!("Failed to parse JSON from resources output: '{}'. Parse error: {}", 
                 trimmed_output, e);
-            Err(TwingateError::JsonParseError(e))
+            Err(TwingateError::from(e))
         }
     }
 }
@@ -178,7 +172,7 @@ pub async fn get_network_data_with_retry(app_handle: &tauri::AppHandle, max_retr
             }
             Ok(ServiceState::AuthRequired) => {
                 log::debug!("Service requires authentication");
-                return Err(TwingateError::AuthRequired("Service state indicates authentication required".to_string()));
+                return Err(TwingateError::AuthenticationRequired);
             }
             Ok(ServiceState::Connected) => {
                 log::debug!("Service reports connected state, attempting to get resources");
@@ -188,9 +182,9 @@ pub async fn get_network_data_with_retry(app_handle: &tauri::AppHandle, max_retr
                         log::debug!("Successfully retrieved network data on attempt {}", retry_count + 1);
                         return Ok(network);
                     }
-                    Err(TwingateError::AuthRequired(_)) => {
+                    Err(TwingateError::AuthenticationRequired) => {
                         log::debug!("Resources indicate authentication required");
-                        return Err(TwingateError::AuthRequired("Resources indicate authentication required".to_string()));
+                        return Err(TwingateError::AuthenticationRequired);
                     }
                     Err(TwingateError::ServiceConnecting) => {
                         log::debug!("Resources not ready despite connected status, service may still be initializing");
@@ -214,9 +208,9 @@ pub async fn get_network_data_with_retry(app_handle: &tauri::AppHandle, max_retr
                         log::debug!("Fallback resources retrieval successful on attempt {}", retry_count + 1);
                         return Ok(network);
                     }
-                    Err(TwingateError::AuthRequired(_)) => {
+                    Err(TwingateError::AuthenticationRequired) => {
                         log::debug!("Fallback resources indicate authentication required");
-                        return Err(TwingateError::AuthRequired("Fallback resources indicate authentication required".to_string()));
+                        return Err(TwingateError::AuthenticationRequired);
                     }
                     Err(TwingateError::ServiceConnecting) => {
                         log::debug!("Fallback resources not ready, will retry");
@@ -236,9 +230,9 @@ pub async fn get_network_data_with_retry(app_handle: &tauri::AppHandle, max_retr
         if retry_count >= max_retries {
             log::warn!("Exhausted {} retries attempting to get network data", max_retries);
             log::debug!("Final service state before giving up: {:?}", get_service_state(app_handle).await);
-            return Err(TwingateError::RetryLimitExceeded(
-                format!("Failed to get network data after {} attempts", max_retries + 1)
-            ));
+            return Err(TwingateError::RetryLimitExceeded { 
+                attempts: max_retries + 1 
+            });
         }
         
         // Wait before retrying with exponential backoff
@@ -274,5 +268,5 @@ pub async fn wait_for_service_ready(app_handle: &tauri::AppHandle, timeout_secon
     }
     
     log::warn!("Timeout waiting for service to be ready");
-    Err(TwingateError::AuthFlowTimeout)
+    Err(TwingateError::AuthenticationTimeout { seconds: timeout_seconds })
 }

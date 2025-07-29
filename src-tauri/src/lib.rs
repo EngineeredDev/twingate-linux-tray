@@ -15,7 +15,11 @@ use auth::{handle_service_auth, start_resource_auth};
 use commands::greet;
 use error::{Result, TwingateError};
 use network::{get_network_data, get_network_data_with_retry};
-use state::{AppState, AppStateType};
+use state::AppState;
+use std::sync::Mutex;
+
+// Compatibility type alias for gradual migration
+type AppStateType = Mutex<AppState>;
 use tray::{
     build_tray_menu, build_disconnected_menu, get_address_from_resource, MenuAction, AUTHENTICATE_ID, COPY_ADDRESS_ID,
     TWINGATE_TRAY_ID,
@@ -24,7 +28,7 @@ use tray::{
 async fn handle_copy_address(app_handle: &AppHandle, address_id: &str) -> Result<()> {
     let resource_id = address_id.split("-").last().ok_or_else(|| {
         eprintln!("Error: Invalid address ID format: {}", address_id);
-        TwingateError::InvalidResourceState("Invalid address ID format".to_string())
+        TwingateError::invalid_resource_id(address_id)
     })?;
 
     // Check if refresh is needed and get current network data
@@ -33,7 +37,7 @@ async fn handle_copy_address(app_handle: &AppHandle, address_id: &str) -> Result
         let state_guard = state.lock().unwrap();
         (
             state_guard.should_refresh(std::time::Duration::from_secs(30)),
-            state_guard.get_network().cloned(),
+            state_guard.network().cloned(),
         )
     };
 
@@ -69,7 +73,7 @@ async fn handle_copy_address(app_handle: &AppHandle, address_id: &str) -> Result
         .position(|x| x.id == resource_id)
         .ok_or_else(|| {
             eprintln!("Error: Resource not found: {}", resource_id);
-            TwingateError::ResourceNotFound(resource_id.to_string())
+            TwingateError::resource_not_found(resource_id)
         })?;
 
     let mut clipboard = Clipboard::new().map_err(|e| {
@@ -123,7 +127,7 @@ fn rebuild_tray_after_delay(app_handle: AppHandle) {
                     }
                     data
                 }
-                Err(TwingateError::ServiceConnecting) | Err(TwingateError::AuthStateTransition) => {
+                Err(TwingateError::ServiceConnecting) | Err(TwingateError::AuthenticationRequired) => {
                     log::debug!("Service in transitional state during tray rebuild, will retry");
 
                     if retry_count >= MAX_REBUILD_RETRIES {
@@ -139,7 +143,7 @@ fn rebuild_tray_after_delay(app_handle: AppHandle) {
                         continue;
                     }
                 }
-                Err(TwingateError::RetryLimitExceeded(_)) => {
+                Err(TwingateError::RetryLimitExceeded { .. }) => {
                     log::warn!(
                         "Network data retrieval retry limit exceeded during tray rebuild"
                     );
@@ -197,7 +201,7 @@ async fn handle_menu_action(app_handle: &AppHandle, action: MenuAction) -> Resul
                         
                         // Check if authentication is required and handle it
                         log::debug!("Checking if service requires authentication");
-                        if let Err(e) = auth::handle_service_auth(app_handle).await {
+                        if let Err(e) = handle_service_auth(app_handle).await {
                             log::error!("Failed to handle service authentication: {}", e);
                             eprintln!("Warning: Failed to handle service authentication: {}", e);
                             // Don't return error here - service is started, just auth failed
@@ -209,16 +213,17 @@ async fn handle_menu_action(app_handle: &AppHandle, action: MenuAction) -> Resul
                             output.status.code()
                         );
                         eprintln!("Error output: {}", error_msg);
-                        return Err(TwingateError::ShellCommandFailed {
-                            code: output.status.code().unwrap_or(-1),
-                            message: error_msg.to_string(),
-                        });
+                        return Err(TwingateError::command_failed(
+                            "twingate start",
+                            output.status.code().unwrap_or(-1),
+                            error_msg,
+                        ));
                     }
                     rebuild_tray_after_delay(app_handle.clone());
                 }
                 Err(e) => {
                     eprintln!("Error: Failed to execute start service command: {}", e);
-                    return Err(TwingateError::CommandError(e));
+                    return Err(TwingateError::from(e));
                 }
             }
         }
@@ -242,16 +247,17 @@ async fn handle_menu_action(app_handle: &AppHandle, action: MenuAction) -> Resul
                             output.status.code()
                         );
                         eprintln!("Error output: {}", error_msg);
-                        return Err(TwingateError::ShellCommandFailed {
-                            code: output.status.code().unwrap_or(-1),
-                            message: error_msg.to_string(),
-                        });
+                        return Err(TwingateError::command_failed(
+                            "twingate stop",
+                            output.status.code().unwrap_or(-1),
+                            error_msg,
+                        ));
                     }
                     rebuild_tray_after_delay(app_handle.clone());
                 }
                 Err(e) => {
                     eprintln!("Error: Failed to execute stop service command: {}", e);
-                    return Err(TwingateError::CommandError(e));
+                    return Err(TwingateError::from(e));
                 }
             }
         }
