@@ -1,6 +1,6 @@
 [package]
-name = "twingate-linux"
-version = "0.1.2"
+name = "twingate-tray"
+version = "0.1.3"
 description = "Twingate Linux Tray App"
 authors = ["me@demi.dev"]
 edition = "2021"
