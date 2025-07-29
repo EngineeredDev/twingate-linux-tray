@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Twingate Tray",
-  "version": "0.1.0",
-  "identifier": "com.twingate-linux.app",
+  "productName": "twingate-tray",
+  "version": "0.1.2",
+  "identifier": "com.twingate-tray.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "twingate-linux",
+        "title": "twingate-tray",
         "width": 800,
         "height": 600,
         "visible": false
