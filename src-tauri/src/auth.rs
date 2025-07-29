@@ -5,8 +5,8 @@ use std::time::Duration;
 use tauri_plugin_shell::ShellExt;
 use tokio::time::sleep;
 
-const AUTH_RETRY_ATTEMPTS: u32 = 3;
-const AUTH_STATUS_CHECK_DELAY_MS: u64 = 2000;
+const AUTH_RETRY_ATTEMPTS: u32 = 10;
+const AUTH_STATUS_CHECK_DELAY_MS: u64 = 500;
 const AUTH_TIMEOUT_SECONDS: u64 = 120;
 
 pub async fn start_resource_auth(app_handle: &tauri::AppHandle, auth_id: &str) -> Result<()> {
