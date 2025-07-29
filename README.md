@@ -44,13 +44,6 @@ After installation, you can start the application from:
 
 ## Development
 
-This application is built with:
-- **Backend**: Rust with Tauri framework
-- **Frontend**: React with TypeScript
-- **Build System**: Vite for frontend, Tauri for packaging
-
-### Building from Source
-
 ```bash
 # Install dependencies
 npm install
