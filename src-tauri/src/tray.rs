@@ -11,6 +11,7 @@ pub enum MenuAction {
     StopService,
     CopyAddress(String),
     Authenticate(String),
+    OpenInBrowser(String),
     Quit,
     Unknown(String),
 }
@@ -29,6 +30,10 @@ impl MenuAction {
                 let resource_id = id.split("-").last().unwrap_or_default();
                 MenuAction::Authenticate(resource_id.to_string())
             }
+            id if id.contains(OPEN_IN_BROWSER_ID) => {
+                let resource_id = id.split("-").last().unwrap_or_default();
+                MenuAction::OpenInBrowser(resource_id.to_string())
+            }
             _ => MenuAction::Unknown(event_id.to_string()),
         }
     }
@@ -41,6 +46,7 @@ pub const STOP_SERVICE_ID: &str = "stop_service";
 pub const RESOURCE_ADDRESS_ID: &str = "resource_address";
 pub const COPY_ADDRESS_ID: &str = "copy_address";
 pub const AUTHENTICATE_ID: &str = "authenticate";
+pub const OPEN_IN_BROWSER_ID: &str = "open_in_browser";
 pub const QUIT_ID: &str = "quit";
 
 pub fn get_address_from_resource(resource: &Resource) -> &String {
@@ -49,6 +55,18 @@ pub fn get_address_from_resource(resource: &Resource) -> &String {
         .as_ref()
         .filter(|s| !s.is_empty())
         .unwrap_or(&resource.address)
+}
+
+pub fn get_open_url_from_resource(resource: &Resource) -> Option<&String> {
+    if !resource.can_open_in_browser {
+        return None;
+    }
+    
+    resource
+        .aliases
+        .iter()
+        .find(|alias| !alias.open_url.is_empty())
+        .map(|alias| &alias.open_url)
 }
 
 pub fn build_resource_menu(resource: &Resource, app: &AppHandle) -> Result<Submenu<tauri::Wry>> {
@@ -71,6 +89,17 @@ pub fn build_resource_menu(resource: &Resource, app: &AppHandle) -> Result<Subme
         true,
         None::<&str>,
     )?)?;
+
+    // Add "Open in Browser" menu item if resource supports it
+    if let Some(_open_url) = get_open_url_from_resource(resource) {
+        submenu.append(&MenuItem::with_id(
+            app,
+            format!("{}-{}", OPEN_IN_BROWSER_ID, &resource.id),
+            "Open in Browser...",
+            true,
+            None::<&str>,
+        )?)?;
+    }
 
     submenu.append(&PredefinedMenuItem::separator(app)?)?;
 

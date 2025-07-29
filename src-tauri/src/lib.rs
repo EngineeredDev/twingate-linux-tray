@@ -21,7 +21,7 @@ use std::sync::Mutex;
 // Compatibility type alias for gradual migration
 type AppStateType = Mutex<AppState>;
 use tray::{
-    build_tray_menu, build_disconnected_menu, get_address_from_resource, MenuAction, AUTHENTICATE_ID, COPY_ADDRESS_ID,
+    build_tray_menu, build_disconnected_menu, get_address_from_resource, get_open_url_from_resource, MenuAction, AUTHENTICATE_ID, COPY_ADDRESS_ID,
     TWINGATE_TRAY_ID,
 };
 
@@ -89,6 +89,71 @@ async fn handle_copy_address(app_handle: &AppHandle, address_id: &str) -> Result
 
     println!("Successfully copied address to clipboard: {}", address);
     Ok(())
+}
+
+async fn handle_open_in_browser(app_handle: &AppHandle, resource_id: &str) -> Result<()> {
+    // Check if refresh is needed and get current network data
+    let state = app_handle.state::<AppStateType>();
+    let (needs_refresh, current_network_data) = {
+        let state_guard = state.lock().unwrap();
+        (
+            state_guard.should_refresh(std::time::Duration::from_secs(30)),
+            state_guard.network().cloned(),
+        )
+    };
+
+    // Get network data - refresh if needed, otherwise use cached
+    let network_data = if needs_refresh {
+        // Refresh network data without holding any locks
+        match get_network_data(app_handle).await {
+            Ok(fresh_data) => {
+                // Update state with fresh data
+                {
+                    let mut state_guard = state.lock().unwrap();
+                    state_guard.update_network(fresh_data.clone());
+                }
+                fresh_data
+            }
+            Err(e) => {
+                eprintln!("Error: Failed to refresh network data: {}", e);
+                return Err(e);
+            }
+        }
+    } else {
+        current_network_data
+    };
+
+    let n = network_data.ok_or_else(|| {
+        eprintln!("Error: Twingate service is not running");
+        TwingateError::ServiceNotRunning
+    })?;
+
+    let resource = n
+        .resources
+        .iter()
+        .find(|x| x.id == resource_id)
+        .ok_or_else(|| {
+            eprintln!("Error: Resource not found: {}", resource_id);
+            TwingateError::resource_not_found(resource_id)
+        })?;
+
+    let open_url = get_open_url_from_resource(resource).ok_or_else(|| {
+        eprintln!("Error: Resource does not support opening in browser: {}", resource_id);
+        TwingateError::invalid_resource_id(resource_id)
+    })?;
+
+    println!("Opening URL in browser: {}", open_url);
+    
+    match tauri_plugin_opener::open_url(open_url, None::<String>) {
+        Ok(_) => {
+            println!("Successfully opened URL in browser: {}", open_url);
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Error: Failed to open URL in browser: {}", e);
+            Err(TwingateError::from(e))
+        }
+    }
 }
 
 fn rebuild_tray_after_delay(app_handle: AppHandle) {
@@ -279,6 +344,10 @@ async fn handle_menu_action(app_handle: &AppHandle, action: MenuAction) -> Resul
                     );
                     e
                 })?;
+        }
+        MenuAction::OpenInBrowser(resource_id) => {
+            println!("Opening resource in browser: {}", resource_id);
+            handle_open_in_browser(app_handle, &resource_id).await?;
         }
         MenuAction::Unknown(event_id) => {
             eprintln!("Warning: Unhandled menu item: {}", event_id);

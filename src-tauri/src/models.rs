@@ -25,7 +25,6 @@ pub struct Resource {
     pub admin_url: String,
     #[serde(default)]
     pub alias: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     pub aliases: Vec<Alias>,
     pub auth_expires_at: i64,
@@ -33,7 +32,6 @@ pub struct Resource {
     pub auth_flow_id: String,
     #[allow(dead_code)]
     pub auth_state: String,
-    #[allow(dead_code)]
     pub can_open_in_browser: bool,
     pub client_visibility: i32,
     pub id: String,
@@ -49,7 +47,6 @@ pub struct Resource {
 pub struct Alias {
     #[allow(dead_code)]
     pub address: String,
-    #[allow(dead_code)]
     pub open_url: String,
 }
 

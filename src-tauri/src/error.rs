@@ -83,6 +83,17 @@ impl From<std::str::Utf8Error> for TwingateError {
     }
 }
 
+impl From<tauri_plugin_opener::Error> for TwingateError {
+    fn from(err: tauri_plugin_opener::Error) -> Self {
+        Self::TrayError {
+            source: tauri::Error::InvalidIcon(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Failed to open URL: {}", err),
+            )),
+        }
+    }
+}
+
 // Helper methods for common error scenarios
 impl TwingateError {
     pub fn command_failed(command: impl Into<String>, code: i32, stderr: impl Into<String>) -> Self {
