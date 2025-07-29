@@ -243,8 +243,8 @@ async fn execute_auth_command(app_handle: &tauri::AppHandle, resource_name: &str
     
     // Execute the authentication command
     let auth_result = shell
-        .command("twingate")
-        .args(["auth", resource_name])
+        .command("pkexec")
+        .args(["twingate", "auth", resource_name])
         .output()
         .await;
 

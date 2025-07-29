@@ -254,8 +254,8 @@ async fn handle_menu_action(app_handle: &AppHandle, action: MenuAction) -> Resul
             println!("Starting Twingate service...");
             let shell = app_handle.shell();
             match shell
-                .command("twingate")
-                .args(["start"])
+                .command("pkexec")
+                .args(["twingate", "start"])
                 .output()
                 .await
             {
@@ -296,8 +296,8 @@ async fn handle_menu_action(app_handle: &AppHandle, action: MenuAction) -> Resul
             println!("Stopping Twingate service...");
             let shell = app_handle.shell();
             match shell
-                .command("twingate")
-                .args(["stop"])
+                .command("pkexec")
+                .args(["twingate", "stop"])
                 .output()
                 .await
             {
