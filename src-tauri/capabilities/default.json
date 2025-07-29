@@ -35,21 +35,6 @@
           "args": ["resources"]
         },
         {
-          "name": "pkexec-twingate-start",
-          "cmd": "pkexec",
-          "args": ["twingate", "start"]
-        },
-        {
-          "name": "pkexec-twingate-stop",
-          "cmd": "pkexec",
-          "args": ["twingate", "stop"]
-        },
-        {
-          "name": "pkexec-twingate-auth",
-          "cmd": "pkexec",
-          "args": ["twingate", "auth", { "validator": "\\S+" }]
-        },
-        {
           "name": "xdg-open-url",
           "cmd": "xdg-open",
           "args": [{ "validator": "https?://[\\w.-]+(?:\\.[\\w.-]+)+[\\w\\-._~:/?#\\[\\]@!$&'()*+,;=%]+" }]
