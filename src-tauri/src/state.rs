@@ -2,12 +2,14 @@ use crate::models::Network;
 use std::time::{Duration, Instant};
 
 /// Service connection status
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceStatus {
     /// Service is not running
     NotRunning,
     /// Service is connected and authenticated
     Connected,
+    /// Service is authenticating with an auth URL
+    Authenticating(String),
 }
 
 impl Default for ServiceStatus {
@@ -39,6 +41,18 @@ impl AppState {
         self.network.as_ref()
     }
     
+    // Service status access
+    pub fn service_status(&self) -> &ServiceStatus {
+        &self.service_status
+    }
+    
+    pub fn auth_url(&self) -> Option<&str> {
+        match &self.service_status {
+            ServiceStatus::Authenticating(url) => Some(url),
+            _ => None,
+        }
+    }
+    
     
     // State update methods
     pub fn update_network(&mut self, network: Option<Network>) {
@@ -49,6 +63,13 @@ impl AppState {
         } else {
             ServiceStatus::NotRunning
         };
+        self.last_update = Some(Instant::now());
+        self.refreshing = false;
+    }
+    
+    pub fn set_authenticating(&mut self, auth_url: String) {
+        self.service_status = ServiceStatus::Authenticating(auth_url);
+        self.network = None;
         self.last_update = Some(Instant::now());
         self.refreshing = false;
     }

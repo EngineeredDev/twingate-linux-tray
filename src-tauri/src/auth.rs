@@ -1,13 +1,44 @@
 use crate::error::{Result, TwingateError};
 use crate::network::{get_network_data_with_retry, wait_for_service_ready};
+use crate::state::AppState;
+use crate::tray::{build_tray_menu, TWINGATE_TRAY_ID};
 use std::str;
+use std::sync::Mutex;
 use std::time::Duration;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::ShellExt;
 use tokio::time::sleep;
 
 const AUTH_RETRY_ATTEMPTS: u32 = 10;
 const AUTH_STATUS_CHECK_DELAY_MS: u64 = 500;
 const AUTH_TIMEOUT_SECONDS: u64 = 120;
+
+async fn rebuild_tray_for_auth_state(app_handle: &AppHandle) -> Result<()> {
+    log::debug!("Rebuilding tray menu for authentication state");
+    
+    // Build and set the tray menu with current state (should show authenticating menu)
+    match build_tray_menu(app_handle, None).await {
+        Ok(menu) => match app_handle.tray_by_id(TWINGATE_TRAY_ID) {
+            Some(tray) => {
+                if let Err(e) = tray.set_menu(Some(menu)) {
+                    log::error!("Failed to set tray menu for auth state: {}", e);
+                    Err(TwingateError::from(e))
+                } else {
+                    log::debug!("Successfully updated tray menu for authenticating state");
+                    Ok(())
+                }
+            }
+            None => {
+                log::error!("Tray icon not found with ID: {}", TWINGATE_TRAY_ID);
+                Err(TwingateError::ServiceNotRunning)
+            }
+        },
+        Err(e) => {
+            log::error!("Failed to build tray menu for auth state: {}", e);
+            Err(e)
+        }
+    }
+}
 
 pub async fn start_resource_auth(app_handle: &tauri::AppHandle, auth_id: &str) -> Result<()> {
     log::debug!("Starting resource authentication for auth_id: {}", auth_id);
@@ -80,78 +111,304 @@ pub async fn handle_service_auth(app_handle: &tauri::AppHandle) -> Result<()> {
     let auth_required = status_str.to_lowercase().contains("authentication is required") ||
                        status_str.to_lowercase().contains("auth required") ||
                        status_str.to_lowercase().contains("not authenticated") ||
-                       status_str.to_lowercase().contains("user authentication is required");
+                       status_str.to_lowercase().contains("user authentication is required") ||
+                       status_str.to_lowercase().contains("authenticating");
     
     if !auth_required {
         log::debug!("Service does not require authentication");
         return Ok(());
     }
     
-    log::info!("Service requires authentication, attempting to get auth URL");
-    
-    // Try to get resources data which might trigger auth URL generation
-    let resources_output = shell
-        .command("twingate")
-        .args(["resources", "list"])
-        .output()
-        .await?;
-    
-    let resources_str = str::from_utf8(&resources_output.stdout)?;
-    
-    log::debug!("Resources output: {}", resources_str);
-    
-    // Check if the resources command output contains an auth URL
-    let mut auth_url: Option<String> = None;
-    
-    // Look for URL patterns in the resources output
-    for line in resources_str.lines() {
-        if let Some(url_start) = line.find("http") {
-            let url_part = &line[url_start..];
-            // Find the end of the URL (whitespace or end of line)
-            let url_end = url_part.find(char::is_whitespace).unwrap_or(url_part.len());
-            let url = url_part[..url_end].trim();
-            
-            if !url.is_empty() && (url.starts_with("https://") || url.starts_with("http://")) {
-                auth_url = Some(url.to_string());
-                log::info!("Found authentication URL in resources output: {}", url);
-                break;
-            }
-        }
-    }
-    
-    // If no URL found in resources, try the auth command
-    if auth_url.is_none() {
-        log::debug!("No URL found in resources output, trying auth command");
+    // Check if we're already in authenticating state and can extract URL from status
+    if status_str.to_lowercase().contains("authenticating") {
+        log::debug!("Service is in authenticating state, looking for URL in status output");
         
-        let auth_output = shell
-            .command("twingate")
-            .args(["auth"])
-            .output()
-            .await?;
-        
-        let auth_str = str::from_utf8(&auth_output.stdout)?;
-        
-        log::debug!("Auth command output: {}", auth_str);
-        
-        // Look for URL patterns in the auth output
-        for line in auth_str.lines() {
+        // Look for the authentication URL in the status output
+        for line in status_str.lines() {
+            // Look for http/https URLs
             if let Some(url_start) = line.find("http") {
                 let url_part = &line[url_start..];
                 let url_end = url_part.find(char::is_whitespace).unwrap_or(url_part.len());
-                let url = url_part[..url_end].trim();
+                let url = url_part[..url_end].trim_end_matches(&['.', ',', ')', ']', '}', '"'][..]);
                 
-                if !url.is_empty() && (url.starts_with("https://") || url.starts_with("http://")) {
+                if !url.is_empty() && (url.starts_with("https://") || url.starts_with("http://")) && url.len() > 20 {
+                    log::info!("Found authentication URL in status output: {}", url);
+                    
+                    // Update application state to show we're authenticating
+                    let state = app_handle.state::<Mutex<AppState>>();
+                    {
+                        let mut state_guard = state.lock().unwrap();
+                        state_guard.set_authenticating(url.to_string());
+                    }
+                    
+                    // Immediately rebuild tray to show authenticating menu
+                    if let Err(e) = rebuild_tray_for_auth_state(app_handle).await {
+                        log::warn!("Failed to rebuild tray for authenticating state: {}", e);
+                    }
+                    
+                    // Try to open the URL in the default browser using Tauri's shell API
+                    match tauri_plugin_opener::open_url(url.to_string(), None::<&str>) {
+                        Ok(_) => {
+                            log::debug!("Successfully opened authentication URL");
+                        }
+                        Err(e) => {
+                            log::error!("Failed to open authentication URL: {}", e);
+                            // Try alternative method using shell command
+                            log::info!("Trying alternative method to open URL");
+                            
+                            #[cfg(target_os = "linux")]
+                            let open_cmd = "xdg-open";
+                            #[cfg(target_os = "macos")]
+                            let open_cmd = "open";
+                            
+                            let open_result = shell
+                                .command(open_cmd)
+                                .args([url])
+                                .output()
+                                .await;
+                                
+                            match open_result {
+                                Ok(output) => {
+                                    if !output.status.success() {
+                                        log::warn!("xdg-open failed with status: {:?}", output.status);
+                                        log::info!("URL is available in tray menu for manual opening");
+                                    } else {
+                                        log::debug!("Successfully opened authentication URL with alternative method");
+                                    }
+                                }
+                                Err(e) => {
+                                    log::warn!("Alternative method also failed: {}", e);
+                                    log::info!("URL is available in tray menu for manual opening");
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Wait a bit for the authentication to start
+                    sleep(Duration::from_millis(3000)).await;
+
+                    // Wait for the service to be ready after authentication
+                    match wait_for_service_ready(app_handle, AUTH_TIMEOUT_SECONDS).await {
+                        Ok(_) => {
+                            log::info!("Service is ready after authentication");
+                            
+                            // Clear the authenticating state since authentication is complete
+                            let state = app_handle.state::<Mutex<AppState>>();
+                            {
+                                let mut state_guard = state.lock().unwrap();
+                                state_guard.update_network(None); // This will set status to NotRunning temporarily
+                            }
+                            
+                            // Trigger a tray rebuild to reflect the new state
+                            crate::rebuild_tray_after_delay(app_handle.clone());
+                            
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            log::warn!("Service not ready after opening auth URL: {}", e);
+                            // Don't fail here - the user might still be completing authentication
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+        
+        // If we found authenticating state but no URL, continue with polling logic below
+        log::debug!("Found authenticating state but no URL in current status output, will poll for it");
+    }
+    
+    log::info!("Service requires authentication, attempting to get auth URL");
+    
+    // Try multiple approaches to get the auth URL, with retries
+    let mut auth_url: Option<String> = None;
+    let max_attempts = 8;
+    let mut attempt = 0;
+    
+    while attempt < max_attempts && auth_url.is_none() {
+        attempt += 1;
+        log::debug!("Auth URL detection attempt {} of {}", attempt, max_attempts);
+        
+        // First, always check the status to see if we're in authenticating state now
+        let status_check = shell
+            .command("twingate")
+            .args(["status"])
+            .output()
+            .await?;
+        
+        let status_check_str = str::from_utf8(&status_check.stdout)?;
+        log::debug!("Status check (attempt {}): {}", attempt, status_check_str);
+        
+        // If we're now in authenticating state, look for the URL
+        if status_check_str.to_lowercase().contains("authenticating") {
+            log::debug!("Service is now in authenticating state on attempt {}", attempt);
+            
+            // Look for the authentication URL in the status output
+            for line in status_check_str.lines() {
+                if let Some(url_start) = line.find("http") {
+                    let url_part = &line[url_start..];
+                    let url_end = url_part.find(char::is_whitespace).unwrap_or(url_part.len());
+                    let url = url_part[..url_end].trim_end_matches(&['.', ',', ')', ']', '}', '"'][..]);
+                    
+                    if !url.is_empty() && (url.starts_with("https://") || url.starts_with("http://")) && url.len() > 20 {
+                        auth_url = Some(url.to_string());
+                        log::info!("Found authentication URL in status on polling attempt {}: {}", attempt, url);
+                        break;
+                    }
+                }
+            }
+            
+            if auth_url.is_some() {
+                break;
+            }
+        }
+        
+        // On first attempt, also try to trigger auth by getting network data
+        if attempt == 1 {
+            log::debug!("Attempting to trigger auth URL generation by accessing network data");
+            match get_network_data_with_retry(app_handle, 1).await {
+                Ok(_) => {
+                    log::debug!("Network data retrieved successfully, authentication might not be needed");
+                    return Ok(());
+                }
+                Err(e) => {
+                    log::debug!("Network data retrieval failed (as expected): {}", e);
+                    // This failure is expected and might have triggered auth URL generation
+                }
+            }
+        }
+        
+        // Try to get resources data which might trigger auth URL generation
+        let resources_output = shell
+            .command("twingate")
+            .args(["resources", "list"])
+            .output()
+            .await?;
+        
+        let resources_str = str::from_utf8(&resources_output.stdout)?;
+        
+        log::debug!("Resources output (attempt {}): {}", attempt, resources_str);
+        
+        // Look for URL patterns in the resources output with enhanced detection
+        for line in resources_str.lines() {
+            // Look for http/https URLs
+            if let Some(url_start) = line.find("http") {
+                let url_part = &line[url_start..];
+                let url_end = url_part.find(char::is_whitespace).unwrap_or(url_part.len());
+                let url = url_part[..url_end].trim_end_matches(&['.', ',', ')', ']', '}'][..]);
+                
+                if !url.is_empty() && (url.starts_with("https://") || url.starts_with("http://")) && url.len() > 10 {
                     auth_url = Some(url.to_string());
-                    log::info!("Found authentication URL in auth output: {}", url);
+                    log::info!("Found authentication URL in resources output (attempt {}): {}", attempt, url);
+                    break;
+                }
+            }
+            
+            // Also look for patterns like "Visit: https://..." or "Go to: https://..."
+            for pattern in &["visit:", "go to:", "open:", "navigate to:", "visit ", "go to ", "browse to:", "authenticate at:", "login at:"] {
+                if let Some(pattern_pos) = line.to_lowercase().find(pattern) {
+                    let after_pattern = &line[pattern_pos + pattern.len()..];
+                    if let Some(url_start) = after_pattern.find("http") {
+                        let url_part = &after_pattern[url_start..];
+                        let url_end = url_part.find(char::is_whitespace).unwrap_or(url_part.len());
+                        let url = url_part[..url_end].trim_end_matches(&['.', ',', ')', ']', '}'][..]);
+                        
+                        if !url.is_empty() && (url.starts_with("https://") || url.starts_with("http://")) && url.len() > 10 {
+                            auth_url = Some(url.to_string());
+                            log::info!("Found authentication URL with pattern '{}' in resources output (attempt {}): {}", 
+                                pattern, attempt, url);
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            if auth_url.is_some() {
+                break;
+            }
+        }
+        
+        if auth_url.is_none() {
+            log::debug!("No URL found in resources output attempt {}, trying multiple auth commands", attempt);
+            
+            // Try different auth-related commands, focusing on status since that's where URL appears
+            let auth_commands = vec![
+                vec!["status"],
+                vec!["status", "--json"],
+                vec!["auth"],
+                vec!["auth", "--help"],
+            ];
+            
+            for cmd_args in auth_commands {
+                let auth_output = shell
+                    .command("twingate")
+                    .args(&cmd_args)
+                    .output()
+                    .await?;
+                
+                let auth_str = str::from_utf8(&auth_output.stdout)?;
+                let auth_err = str::from_utf8(&auth_output.stderr).unwrap_or("");
+                
+                log::debug!("Command 'twingate {}' output (attempt {}): stdout='{}', stderr='{}'", 
+                    cmd_args.join(" "), attempt, auth_str, auth_err);
+                
+                // Look for URL patterns in both stdout and stderr
+                let combined_output = format!("{}\n{}", auth_str, auth_err);
+                for line in combined_output.lines() {
+                    // Look for http/https URLs
+                    if let Some(url_start) = line.find("http") {
+                        let url_part = &line[url_start..];
+                        let url_end = url_part.find(char::is_whitespace).unwrap_or(url_part.len());
+                        let url = url_part[..url_end].trim_end_matches(&['.', ',', ')', ']', '}'][..]);
+                        
+                        if !url.is_empty() && (url.starts_with("https://") || url.starts_with("http://")) && url.len() > 10 {
+                            auth_url = Some(url.to_string());
+                            log::info!("Found authentication URL in '{}' output (attempt {}): {}", 
+                                cmd_args.join(" "), attempt, url);
+                            break;
+                        }
+                    }
+                    
+                    // Also look for patterns like "Visit: https://..." or "Go to: https://..."
+                    for pattern in &["visit:", "go to:", "open:", "navigate to:", "visit ", "go to ", "browse to:"] {
+                        if let Some(pattern_pos) = line.to_lowercase().find(pattern) {
+                            let after_pattern = &line[pattern_pos + pattern.len()..];
+                            if let Some(url_start) = after_pattern.find("http") {
+                                let url_part = &after_pattern[url_start..];
+                                let url_end = url_part.find(char::is_whitespace).unwrap_or(url_part.len());
+                                let url = url_part[..url_end].trim_end_matches(&['.', ',', ')', ']', '}'][..]);
+                                
+                                if !url.is_empty() && (url.starts_with("https://") || url.starts_with("http://")) && url.len() > 10 {
+                                    auth_url = Some(url.to_string());
+                                    log::info!("Found authentication URL with pattern '{}' in '{}' output (attempt {}): {}", 
+                                        pattern, cmd_args.join(" "), attempt, url);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    
+                    if auth_url.is_some() {
+                        break;
+                    }
+                }
+                
+                if auth_url.is_some() {
                     break;
                 }
             }
         }
+        
+        // If still no URL found and this isn't the last attempt, wait before retrying
+        if auth_url.is_none() && attempt < max_attempts {
+            log::debug!("No auth URL found on attempt {}, waiting 1.5 seconds before retry", attempt);
+            sleep(Duration::from_millis(1500)).await;
+        }
     }
     
-    // If still no URL, try to trigger authentication by accessing network data
+    // If still no URL after all attempts, try to trigger authentication by accessing network data
     if auth_url.is_none() {
-        log::debug!("No URL found, trying to trigger authentication");
+        log::debug!("No URL found after {} attempts, trying to trigger authentication via network data", max_attempts);
         
         // Try to get network data which might trigger auth
         match get_network_data_with_retry(app_handle, 1).await {
@@ -179,9 +436,21 @@ pub async fn handle_service_auth(app_handle: &tauri::AppHandle) -> Result<()> {
     }
     
     if let Some(url) = auth_url {
-        log::info!("Opening authentication URL: {}", url);
+        log::info!("Found authentication URL: {}", url);
         
-        // Open the URL in the default browser using Tauri's shell API
+        // Update application state to show we're authenticating
+        let state = app_handle.state::<Mutex<AppState>>();
+        {
+            let mut state_guard = state.lock().unwrap();
+            state_guard.set_authenticating(url.clone());
+        }
+        
+        // Immediately rebuild tray to show authenticating menu
+        if let Err(e) = rebuild_tray_for_auth_state(app_handle).await {
+            log::warn!("Failed to rebuild tray for authenticating state: {}", e);
+        }
+        
+        // Try to open the URL in the default browser using Tauri's shell API
         match tauri_plugin_opener::open_url(url.clone(), None::<&str>) {
             Ok(_) => {
                 log::debug!("Successfully opened authentication URL");
@@ -201,10 +470,20 @@ pub async fn handle_service_auth(app_handle: &tauri::AppHandle) -> Result<()> {
                     .args([&url])
                     .output()
                     .await;
-                
-                if let Err(e) = open_result {
-                    log::error!("Alternative method also failed: {}", e);
-                    return Err(TwingateError::from(e));
+                    
+                match open_result {
+                    Ok(output) => {
+                        if !output.status.success() {
+                            log::warn!("xdg-open failed with status: {:?}", output.status);
+                            log::info!("URL is available in tray menu for manual opening");
+                        } else {
+                            log::debug!("Successfully opened authentication URL with alternative method");
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Alternative method also failed: {}", e);
+                        log::info!("URL is available in tray menu for manual opening");
+                    }
                 }
             }
         }
@@ -216,6 +495,17 @@ pub async fn handle_service_auth(app_handle: &tauri::AppHandle) -> Result<()> {
         match wait_for_service_ready(app_handle, AUTH_TIMEOUT_SECONDS).await {
             Ok(_) => {
                 log::info!("Service is ready after authentication");
+                
+                // Clear the authenticating state since authentication is complete
+                let state = app_handle.state::<Mutex<AppState>>();
+                {
+                    let mut state_guard = state.lock().unwrap();
+                    state_guard.update_network(None); // This will set status to NotRunning temporarily
+                }
+                
+                // Trigger a tray rebuild to reflect the new state
+                crate::rebuild_tray_after_delay(app_handle.clone());
+                
                 Ok(())
             }
             Err(e) => {

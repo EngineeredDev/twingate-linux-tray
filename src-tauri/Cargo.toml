@@ -30,3 +30,4 @@ regex = "1.5.4"
 tauri-plugin-single-instance = "2"
 thiserror = "1.0"
 log = "0.4"
+fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs" }

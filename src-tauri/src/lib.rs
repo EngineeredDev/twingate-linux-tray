@@ -156,7 +156,60 @@ async fn handle_open_in_browser(app_handle: &AppHandle, resource_id: &str) -> Re
     }
 }
 
-fn rebuild_tray_after_delay(app_handle: AppHandle) {
+async fn handle_open_auth_url(app_handle: &AppHandle) -> Result<()> {
+    let state = app_handle.state::<AppStateType>();
+    let auth_url = {
+        let state_guard = state.lock().unwrap();
+        state_guard.auth_url().map(|url| url.to_string())
+    };
+
+    if let Some(url) = auth_url {
+        println!("Opening authentication URL: {}", url);
+        
+        match tauri_plugin_opener::open_url(url.clone(), None::<String>) {
+            Ok(_) => {
+                println!("Successfully opened authentication URL in browser");
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("Error: Failed to open authentication URL: {}", e);
+                Err(TwingateError::from(e))
+            }
+        }
+    } else {
+        eprintln!("Error: No authentication URL available");
+        Err(TwingateError::ServiceNotRunning)
+    }
+}
+
+async fn handle_copy_auth_url(app_handle: &AppHandle) -> Result<()> {
+    let state = app_handle.state::<AppStateType>();
+    let auth_url = {
+        let state_guard = state.lock().unwrap();
+        state_guard.auth_url().map(|url| url.to_string())
+    };
+
+    if let Some(url) = auth_url {
+        let mut clipboard = Clipboard::new().map_err(|e| {
+            eprintln!("Error: Failed to access clipboard: {}", e);
+            e
+        })?;
+
+        clipboard.set_text(url.clone()).map_err(|e| {
+            eprintln!("Error: Failed to copy authentication URL to clipboard: {}", e);
+            e
+        })?;
+
+        println!("Successfully copied authentication URL to clipboard: {}", url);
+        Ok(())
+    } else {
+        eprintln!("Error: No authentication URL available");
+        Err(TwingateError::ServiceNotRunning)
+    }
+}
+
+
+pub fn rebuild_tray_after_delay(app_handle: AppHandle) {
     tauri::async_runtime::spawn(async move {
         // Use longer initial delay during authentication flow
         tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
@@ -266,10 +319,27 @@ async fn handle_menu_action(app_handle: &AppHandle, action: MenuAction) -> Resul
                         
                         // Check if authentication is required and handle it
                         log::debug!("Checking if service requires authentication");
-                        if let Err(e) = handle_service_auth(app_handle).await {
-                            log::error!("Failed to handle service authentication: {}", e);
-                            eprintln!("Warning: Failed to handle service authentication: {}", e);
-                            // Don't return error here - service is started, just auth failed
+                        match handle_service_auth(app_handle).await {
+                            Ok(_) => {
+                                // Check if we're now in authenticating state
+                                let state = app_handle.state::<AppStateType>();
+                                let is_authenticating = {
+                                    let state_guard = state.lock().unwrap();
+                                    matches!(state_guard.service_status(), crate::state::ServiceStatus::Authenticating(_))
+                                };
+                                
+                                // Only call rebuild_tray_after_delay if not authenticating
+                                // (if authenticating, the tray was already rebuilt immediately)
+                                if !is_authenticating {
+                                    rebuild_tray_after_delay(app_handle.clone());
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Failed to handle service authentication: {}", e);
+                                eprintln!("Warning: Failed to handle service authentication: {}", e);
+                                // Don't return error here - service is started, just auth failed
+                                rebuild_tray_after_delay(app_handle.clone());
+                            }
                         }
                     } else {
                         let error_msg = String::from_utf8_lossy(&output.stderr);
@@ -284,7 +354,6 @@ async fn handle_menu_action(app_handle: &AppHandle, action: MenuAction) -> Resul
                             error_msg,
                         ));
                     }
-                    rebuild_tray_after_delay(app_handle.clone());
                 }
                 Err(e) => {
                     eprintln!("Error: Failed to execute start service command: {}", e);
@@ -348,6 +417,14 @@ async fn handle_menu_action(app_handle: &AppHandle, action: MenuAction) -> Resul
         MenuAction::OpenInBrowser(resource_id) => {
             println!("Opening resource in browser: {}", resource_id);
             handle_open_in_browser(app_handle, &resource_id).await?;
+        }
+        MenuAction::OpenAuthUrl => {
+            println!("Opening authentication URL...");
+            handle_open_auth_url(app_handle).await?;
+        }
+        MenuAction::CopyAuthUrl => {
+            println!("Copying authentication URL to clipboard...");
+            handle_copy_auth_url(app_handle).await?;
         }
         MenuAction::Unknown(event_id) => {
             eprintln!("Warning: Unhandled menu item: {}", event_id);

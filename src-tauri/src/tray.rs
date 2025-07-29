@@ -1,8 +1,10 @@
 use crate::error::Result;
 use crate::models::{Network, Resource};
+use crate::state::{AppState, ServiceStatus};
+use std::sync::Mutex;
 use tauri::{
     menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
-    AppHandle,
+    AppHandle, Manager,
 };
 
 #[derive(Debug, Clone)]
@@ -12,6 +14,8 @@ pub enum MenuAction {
     CopyAddress(String),
     Authenticate(String),
     OpenInBrowser(String),
+    OpenAuthUrl,
+    CopyAuthUrl,
     Quit,
     Unknown(String),
 }
@@ -22,6 +26,8 @@ impl MenuAction {
             QUIT_ID => MenuAction::Quit,
             START_SERVICE_ID => MenuAction::StartService,
             STOP_SERVICE_ID => MenuAction::StopService,
+            OPEN_AUTH_URL_ID => MenuAction::OpenAuthUrl,
+            COPY_AUTH_URL_ID => MenuAction::CopyAuthUrl,
             id if id.contains(COPY_ADDRESS_ID) => {
                 let resource_id = id.split("-").last().unwrap_or_default();
                 MenuAction::CopyAddress(resource_id.to_string())
@@ -47,6 +53,8 @@ pub const RESOURCE_ADDRESS_ID: &str = "resource_address";
 pub const COPY_ADDRESS_ID: &str = "copy_address";
 pub const AUTHENTICATE_ID: &str = "authenticate";
 pub const OPEN_IN_BROWSER_ID: &str = "open_in_browser";
+pub const OPEN_AUTH_URL_ID: &str = "open_auth_url";
+pub const COPY_AUTH_URL_ID: &str = "copy_auth_url";
 pub const QUIT_ID: &str = "quit";
 
 pub fn get_address_from_resource(resource: &Resource) -> &String {
@@ -149,9 +157,19 @@ pub async fn build_tray_menu(
     app: &AppHandle,
     network_data: Option<Network>,
 ) -> Result<Menu<tauri::Wry>> {
-    match network_data {
-        Some(n) => build_connected_menu(app, &n).await,
-        None => build_disconnected_menu(app).await,
+    // Check application state to determine if we're in authenticating mode
+    let service_status = {
+        let app_state = app.state::<Mutex<AppState>>();
+        let state_guard = app_state.lock().unwrap();
+        state_guard.service_status().clone()
+    };
+    
+    match service_status {
+        ServiceStatus::Authenticating(auth_url) => build_authenticating_menu(app, &auth_url).await,
+        _ => match network_data {
+            Some(n) => build_connected_menu(app, &n).await,
+            None => build_disconnected_menu(app).await,
+        }
     }
 }
 
@@ -194,8 +212,51 @@ async fn build_connected_menu(app: &AppHandle, network: &Network) -> Result<Menu
 pub async fn build_disconnected_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>> {
     let start_item =
         MenuItem::with_id(app, START_SERVICE_ID, "Start Twingate", true, None::<&str>)?;
+    
+    let separator = PredefinedMenuItem::separator(app)?;
+    let quit_item = MenuItem::with_id(app, QUIT_ID, "Close Tray", true, None::<&str>)?;
 
-    Ok(Menu::with_items(app, &[&start_item])?)
+    Ok(Menu::with_items(app, &[&start_item, &separator, &quit_item])?)
+}
+
+pub async fn build_authenticating_menu(app: &AppHandle, _auth_url: &str) -> Result<Menu<tauri::Wry>> {
+    let auth_status = MenuItem::with_id(
+        app,
+        "auth_status",
+        "Authenticating...",
+        false,
+        None::<&str>,
+    )?;
+
+    let separator1 = PredefinedMenuItem::separator(app)?;
+
+    let open_auth_url_item = MenuItem::with_id(
+        app,
+        OPEN_AUTH_URL_ID,
+        "Open Authentication URL",
+        true,
+        None::<&str>,
+    )?;
+
+    let copy_auth_url_item = MenuItem::with_id(
+        app,
+        COPY_AUTH_URL_ID,
+        "Copy Authentication URL",
+        true,
+        None::<&str>,
+    )?;
+
+    let separator2 = PredefinedMenuItem::separator(app)?;
+    let quit_item = MenuItem::with_id(app, QUIT_ID, "Close Tray", true, None::<&str>)?;
+
+    Ok(Menu::with_items(app, &[
+        &auth_status,
+        &separator1,
+        &open_auth_url_item,
+        &copy_auth_url_item,
+        &separator2,
+        &quit_item
+    ])?)
 }
 
 fn build_user_status_section(
