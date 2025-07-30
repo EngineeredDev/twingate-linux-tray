@@ -270,3 +270,229 @@ pub async fn wait_for_service_ready(app_handle: &tauri::AppHandle, timeout_secon
     log::warn!("Timeout waiting for service to be ready");
     Err(TwingateError::AuthenticationTimeout { seconds: timeout_seconds })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_service_state_from_status_output_not_running() {
+        let test_cases = vec![
+            "not-running",
+            "offline",
+            "stopped",
+            "not running",
+            "inactive",
+            "dead",
+            "Service is not-running",
+            "Status: offline",
+        ];
+
+        for output in test_cases {
+            let state = ServiceState::from_status_output(output);
+            assert_eq!(state, ServiceState::NotRunning, "Failed for output: {}", output);
+        }
+    }
+
+    #[test]
+    fn test_service_state_from_status_output_starting() {
+        let test_cases = vec![
+            "starting",
+            "initializing",
+            "booting",
+            "loading",
+            "launching",
+            "Service is starting",
+            "Status: initializing",
+        ];
+
+        for output in test_cases {
+            let state = ServiceState::from_status_output(output);
+            assert_eq!(state, ServiceState::Starting, "Failed for output: {}", output);
+        }
+    }
+
+    #[test]
+    fn test_service_state_from_status_output_connecting() {
+        let test_cases = vec![
+            "connecting",
+            "authenticating",
+            "handshake",
+            "establishing",
+            "negotiating",
+            "Service is connecting",
+            "Status: authenticating",
+        ];
+
+        for output in test_cases {
+            let state = ServiceState::from_status_output(output);
+            assert_eq!(state, ServiceState::Connecting, "Failed for output: {}", output);
+        }
+    }
+
+    #[test]
+    fn test_service_state_from_status_output_connected() {
+        let test_cases = vec![
+            "online",
+            "connected",
+            "ready",
+            "active",
+            "established",
+            "Service is online",
+            "Status: connected",
+        ];
+
+        for output in test_cases {
+            let state = ServiceState::from_status_output(output);
+            assert_eq!(state, ServiceState::Connected, "Failed for output: {}", output);
+        }
+    }
+
+    #[test]
+    fn test_service_state_from_status_output_auth_required() {
+        let test_cases = vec![
+            "authentication is required",
+            "auth required",
+            "authentication required",
+            "user authentication is required",
+            "needs authentication",
+            "not authenticated",
+            "authentication needed",
+            "please authenticate",
+            "requires authentication",
+            "auth expired",
+            "Authentication is Required",
+            "AUTH REQUIRED",
+        ];
+
+        for output in test_cases {
+            let state = ServiceState::from_status_output(output);
+            assert_eq!(state, ServiceState::AuthRequired, "Failed for output: {}", output);
+        }
+    }
+
+    #[test]
+    fn test_service_state_from_status_output_auth_required_priority() {
+        // Auth required should take priority over other states
+        let test_cases = vec![
+            "connected but authentication is required",
+            "online, auth required",
+            "ready - user authentication is required",
+        ];
+
+        for output in test_cases {
+            let state = ServiceState::from_status_output(output);
+            assert_eq!(state, ServiceState::AuthRequired, "Failed for output: {}", output);
+        }
+    }
+
+    #[test]
+    fn test_service_state_from_status_output_unknown() {
+        let test_cases = vec![
+            "unknown status",
+            "weird state",
+            "unexpected output",
+            "",
+            "12345",
+            "random text",
+        ];
+
+        for output in test_cases {
+            let state = ServiceState::from_status_output(output);
+            assert_eq!(state, ServiceState::Connecting, "Failed for output: {}", output);
+        }
+    }
+
+    #[test]
+    fn test_service_state_from_status_output_case_insensitive() {
+        let test_cases = vec![
+            ("NOT-RUNNING", ServiceState::NotRunning),
+            ("ONLINE", ServiceState::Connected),
+            ("STARTING", ServiceState::Starting),
+            ("CONNECTING", ServiceState::Connecting),
+            ("Authentication Is Required", ServiceState::AuthRequired),
+        ];
+
+        for (output, expected) in test_cases {
+            let state = ServiceState::from_status_output(output);
+            assert_eq!(state, expected, "Failed for output: {}", output);
+        }
+    }
+
+    #[test]
+    fn test_service_state_debug_format() {
+        assert_eq!(format!("{:?}", ServiceState::NotRunning), "NotRunning");
+        assert_eq!(format!("{:?}", ServiceState::Starting), "Starting");
+        assert_eq!(format!("{:?}", ServiceState::Connecting), "Connecting");
+        assert_eq!(format!("{:?}", ServiceState::Connected), "Connected");
+        assert_eq!(format!("{:?}", ServiceState::AuthRequired), "AuthRequired");
+    }
+
+    #[test]
+    fn test_service_state_equality() {
+        assert_eq!(ServiceState::NotRunning, ServiceState::NotRunning);
+        assert_eq!(ServiceState::Connected, ServiceState::Connected);
+        assert_ne!(ServiceState::NotRunning, ServiceState::Connected);
+        assert_ne!(ServiceState::Starting, ServiceState::Connecting);
+    }
+
+    #[test]
+    fn test_service_state_clone() {
+        let state = ServiceState::AuthRequired;
+        let cloned = state.clone();
+        assert_eq!(state, cloned);
+    }
+
+    #[test]
+    fn test_constants_values() {
+        assert_eq!(MAX_RETRIES, 8);
+        assert_eq!(BASE_DELAY_MS, 1000);
+        assert_eq!(MAX_DELAY_MS, 10000);
+    }
+
+    #[test]
+    fn test_service_state_from_complex_output() {
+        // Test more realistic status outputs
+        let complex_outputs = vec![
+            ("Twingate is not-running. Run 'twingate start' to start.", ServiceState::NotRunning),
+            ("Twingate is online. Resources: 5", ServiceState::Connected),
+            ("Twingate is starting... Please wait.", ServiceState::Starting),
+            ("Twingate is connecting to network...", ServiceState::Connecting),
+            ("Twingate is ready but user authentication is required. Please run 'twingate auth'.", ServiceState::AuthRequired),
+        ];
+
+        for (output, expected) in complex_outputs {
+            let state = ServiceState::from_status_output(output);
+            assert_eq!(state, expected, "Failed for complex output: {}", output);
+        }
+    }
+
+    #[test]
+    fn test_service_state_multiline_output() {
+        let multiline_output = "Twingate Status:\nState: authentication is required\nResources: 0";
+        let state = ServiceState::from_status_output(multiline_output);
+        assert_eq!(state, ServiceState::AuthRequired);
+    }
+
+    #[test]
+    fn test_service_state_whitespace_handling() {
+        let outputs_with_whitespace = vec![
+            "  authentication is required  ",
+            "\tconnected\t",
+            "\nstarting\n",
+            "   not-running   ",
+        ];
+
+        let expected = vec![
+            ServiceState::AuthRequired,
+            ServiceState::Connected,
+            ServiceState::Starting,
+            ServiceState::NotRunning,
+        ];
+
+        for (output, expected_state) in outputs_with_whitespace.iter().zip(expected.iter()) {
+            let state = ServiceState::from_status_output(output);
+            assert_eq!(&state, expected_state, "Failed for output with whitespace: '{}'", output);
+        }
+    }
+}

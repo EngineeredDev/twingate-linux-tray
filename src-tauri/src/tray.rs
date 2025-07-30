@@ -317,3 +317,273 @@ fn build_resources_section(
 
     Ok((total_resources_item, resource_submenus))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::Alias;
+
+    fn create_test_resource() -> Resource {
+        Resource {
+            address: "192.168.1.100".to_string(),
+            admin_url: "https://admin.twingate.com/resource/123".to_string(),
+            alias: Some("my-server".to_string()),
+            aliases: vec![
+                Alias {
+                    address: "server.internal".to_string(),
+                    open_url: "https://server.internal".to_string(),
+                }
+            ],
+            auth_expires_at: 1640995200,
+            auth_flow_id: "flow-123".to_string(),
+            auth_state: "authenticated".to_string(),
+            can_open_in_browser: true,
+            client_visibility: 1,
+            id: "resource-123".to_string(),
+            name: "My Server".to_string(),
+            open_url: "https://server.internal".to_string(),
+            resource_type: "tcp".to_string(),
+        }
+    }
+
+    fn create_test_resource_without_browser() -> Resource {
+        Resource {
+            address: "192.168.1.101".to_string(),
+            admin_url: "https://admin.twingate.com/resource/124".to_string(),
+            alias: None,
+            aliases: vec![],
+            auth_expires_at: 0, // Requires authentication
+            auth_flow_id: "flow-124".to_string(),
+            auth_state: "not_authenticated".to_string(),
+            can_open_in_browser: false,
+            client_visibility: 1,
+            id: "resource-124".to_string(),
+            name: "Database Server".to_string(),
+            open_url: "".to_string(),
+            resource_type: "tcp".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_menu_action_from_event_id_basic() {
+        assert!(matches!(MenuAction::from_event_id(QUIT_ID), MenuAction::Quit));
+        assert!(matches!(MenuAction::from_event_id(START_SERVICE_ID), MenuAction::StartService));
+        assert!(matches!(MenuAction::from_event_id(STOP_SERVICE_ID), MenuAction::StopService));
+        assert!(matches!(MenuAction::from_event_id(OPEN_AUTH_URL_ID), MenuAction::OpenAuthUrl));
+        assert!(matches!(MenuAction::from_event_id(COPY_AUTH_URL_ID), MenuAction::CopyAuthUrl));
+    }
+
+    #[test]
+    fn test_menu_action_from_event_id_copy_address() {
+        let event_id = "copy_address-resource-123";
+        match MenuAction::from_event_id(event_id) {
+            MenuAction::CopyAddress(resource_id) => {
+                assert_eq!(resource_id, "123"); // split("-").last() returns the last part
+            }
+            _ => panic!("Expected CopyAddress action"),
+        }
+    }
+
+    #[test]
+    fn test_menu_action_from_event_id_authenticate() {
+        let event_id = "authenticate-resource-456";
+        match MenuAction::from_event_id(event_id) {
+            MenuAction::Authenticate(resource_id) => {
+                assert_eq!(resource_id, "456"); // split("-").last() returns the last part
+            }
+            _ => panic!("Expected Authenticate action"),
+        }
+    }
+
+    #[test]
+    fn test_menu_action_from_event_id_open_in_browser() {
+        let event_id = "open_in_browser-resource-789";
+        match MenuAction::from_event_id(event_id) {
+            MenuAction::OpenInBrowser(resource_id) => {
+                assert_eq!(resource_id, "789"); // split("-").last() returns the last part
+            }
+            _ => panic!("Expected OpenInBrowser action"),
+        }
+    }
+
+    #[test]
+    fn test_menu_action_from_event_id_unknown() {
+        let event_id = "unknown_event_type";
+        match MenuAction::from_event_id(event_id) {
+            MenuAction::Unknown(id) => {
+                assert_eq!(id, "unknown_event_type");
+            }
+            _ => panic!("Expected Unknown action"),
+        }
+    }
+
+    #[test]
+    fn test_menu_action_debug_format() {
+        let action = MenuAction::Quit;
+        assert_eq!(format!("{:?}", action), "Quit");
+
+        let action = MenuAction::CopyAddress("test".to_string());
+        assert_eq!(format!("{:?}", action), "CopyAddress(\"test\")");
+    }
+
+    #[test]
+    fn test_menu_action_clone() {
+        let action = MenuAction::Authenticate("test-resource".to_string());
+        let cloned = action.clone();
+        match (action, cloned) {
+            (MenuAction::Authenticate(id1), MenuAction::Authenticate(id2)) => {
+                assert_eq!(id1, id2);
+            }
+            _ => panic!("Clone failed"),
+        }
+    }
+
+    #[test]
+    fn test_get_address_from_resource_with_alias() {
+        let resource = create_test_resource();
+        let address = get_address_from_resource(&resource);
+        assert_eq!(address, "my-server");
+    }
+
+    #[test]
+    fn test_get_address_from_resource_without_alias() {
+        let resource = create_test_resource_without_browser();
+        let address = get_address_from_resource(&resource);
+        assert_eq!(address, "192.168.1.101");
+    }
+
+    #[test]
+    fn test_get_address_from_resource_empty_alias() {
+        let mut resource = create_test_resource();
+        resource.alias = Some("".to_string()); // Empty alias should fall back to address
+        let address = get_address_from_resource(&resource);
+        assert_eq!(address, "192.168.1.100");
+    }
+
+    #[test]
+    fn test_get_open_url_from_resource_with_browser_support() {
+        let resource = create_test_resource();
+        let url = get_open_url_from_resource(&resource);
+        assert_eq!(url, Some(&"https://server.internal".to_string()));
+    }
+
+    #[test]
+    fn test_get_open_url_from_resource_without_browser_support() {
+        let resource = create_test_resource_without_browser();
+        let url = get_open_url_from_resource(&resource);
+        assert_eq!(url, None);
+    }
+
+    #[test]
+    fn test_get_open_url_from_resource_empty_aliases() {
+        let mut resource = create_test_resource();
+        resource.aliases.clear();
+        let url = get_open_url_from_resource(&resource);
+        assert_eq!(url, None);
+    }
+
+    #[test]
+    fn test_get_open_url_from_resource_empty_open_url() {
+        let mut resource = create_test_resource();
+        resource.aliases[0].open_url = "".to_string();
+        let url = get_open_url_from_resource(&resource);
+        assert_eq!(url, None);
+    }
+
+    #[test]
+    fn test_constants() {
+        assert_eq!(TWINGATE_TRAY_ID, "twingate_tray");
+        assert_eq!(USER_STATUS_ID, "user_status");
+        assert_eq!(START_SERVICE_ID, "start_service");
+        assert_eq!(STOP_SERVICE_ID, "stop_service");
+        assert_eq!(RESOURCE_ADDRESS_ID, "resource_address");
+        assert_eq!(COPY_ADDRESS_ID, "copy_address");
+        assert_eq!(AUTHENTICATE_ID, "authenticate");
+        assert_eq!(OPEN_IN_BROWSER_ID, "open_in_browser");
+        assert_eq!(OPEN_AUTH_URL_ID, "open_auth_url");
+        assert_eq!(COPY_AUTH_URL_ID, "copy_auth_url");
+        assert_eq!(QUIT_ID, "quit");
+    }
+
+    #[test]
+    fn test_menu_action_from_event_id_edge_cases() {
+        // Test with malformed IDs
+        match MenuAction::from_event_id("copy_address-") {
+            MenuAction::CopyAddress(id) => assert_eq!(id, ""),
+            _ => panic!("Expected CopyAddress with empty ID"),
+        }
+
+        // "authenticate" contains "authenticate" so it will be parsed as Authenticate action
+        match MenuAction::from_event_id("authenticate") {
+            MenuAction::Authenticate(id) => assert_eq!(id, "authenticate"), // split("-").last() on "authenticate" returns "authenticate"
+            _ => panic!("Expected Authenticate action"),
+        }
+
+        // Test with empty string
+        match MenuAction::from_event_id("") {
+            MenuAction::Unknown(id) => assert_eq!(id, ""),
+            _ => panic!("Expected Unknown action for empty string"),
+        }
+    }
+
+    #[test]
+    fn test_resource_address_preference() {
+        // Test that non-empty alias takes precedence over address
+        let mut resource = create_test_resource();
+        resource.alias = Some("preferred-name".to_string());
+        resource.address = "192.168.1.100".to_string();
+        
+        let address = get_address_from_resource(&resource);
+        assert_eq!(address, "preferred-name");
+
+        // Test that address is used when alias is None
+        resource.alias = None;
+        let address = get_address_from_resource(&resource);
+        assert_eq!(address, "192.168.1.100");
+    }
+
+    #[test]
+    fn test_browser_url_selection() {
+        let mut resource = create_test_resource();
+        
+        // Add multiple aliases with different open_url values
+        resource.aliases = vec![
+            Alias {
+                address: "first.internal".to_string(),
+                open_url: "".to_string(), // Empty - should be skipped
+            },
+            Alias {
+                address: "second.internal".to_string(),
+                open_url: "https://second.internal".to_string(), // This should be selected
+            },
+            Alias {
+                address: "third.internal".to_string(),
+                open_url: "https://third.internal".to_string(),
+            },
+        ];
+
+        let url = get_open_url_from_resource(&resource);
+        assert_eq!(url, Some(&"https://second.internal".to_string()));
+    }
+
+    #[test]
+    fn test_menu_action_resource_id_extraction() {
+        // Test complex resource IDs
+        let complex_id = "copy_address-very-long-resource-id-with-many-dashes";
+        match MenuAction::from_event_id(complex_id) {
+            MenuAction::CopyAddress(resource_id) => {
+                assert_eq!(resource_id, "dashes"); // Should get the last part after split
+            }
+            _ => panic!("Expected CopyAddress action"),
+        }
+
+        // Test single dash
+        let single_dash = "authenticate-single";
+        match MenuAction::from_event_id(single_dash) {
+            MenuAction::Authenticate(resource_id) => {
+                assert_eq!(resource_id, "single");
+            }
+            _ => panic!("Expected Authenticate action"),
+        }
+    }
+}

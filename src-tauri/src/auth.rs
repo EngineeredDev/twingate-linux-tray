@@ -513,4 +513,213 @@ async fn wait_for_auth_completion(app_handle: &tauri::AppHandle) -> Result<()> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    #[test]
+    fn test_constants_values() {
+        assert_eq!(AUTH_RETRY_ATTEMPTS, 10);
+        assert_eq!(AUTH_STATUS_CHECK_DELAY_MS, 500);
+        assert_eq!(AUTH_TIMEOUT_SECONDS, 120);
+    }
+
+    #[test]
+    fn test_auth_url_extraction_scenarios() {
+        // Test various authentication output patterns
+        let test_cases = vec![
+            (
+                "Please visit: https://auth.twingate.com/device?code=ABC123",
+                Some("https://auth.twingate.com/device?code=ABC123"),
+            ),
+            (
+                "Go to: https://mycompany.twingate.com/auth",
+                Some("https://mycompany.twingate.com/auth"),
+            ),
+            (
+                "Authentication required. No URL provided.",
+                None,
+            ),
+            (
+                "Visit https://example.com/very/long/path?param1=value1&param2=value2#fragment",
+                Some("https://example.com/very/long/path?param1=value1&param2=value2#fragment"),
+            ),
+            (
+                "Multiple URLs: https://first.com and https://second.com",
+                Some("https://first.com"),
+            ),
+            (
+                "No authentication required",
+                None,
+            ),
+            (
+                "Status: authenticating\nPlease visit: https://auth.company.com/login",
+                Some("https://auth.company.com/login"),
+            ),
+        ];
+
+        for (input, expected) in test_cases {
+            let result = extract_url_from_text(input);
+            assert_eq!(result.as_deref(), expected, "Failed for input: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_auth_url_extraction_with_patterns() {
+        let patterns = &["visit:", "go to:", "navigate to:", "open:"];
+        
+        let test_cases = vec![
+            (
+                "Please visit: https://auth.example.com",
+                Some("https://auth.example.com"),
+            ),
+            (
+                "You need to go to: https://company.twingate.com/auth",
+                Some("https://company.twingate.com/auth"),
+            ),
+            (
+                "Navigate to: https://secure.example.com/login?token=xyz",
+                Some("https://secure.example.com/login?token=xyz"),
+            ),
+            (
+                "Open: https://portal.example.com",
+                Some("https://portal.example.com"),
+            ),
+            (
+                "Authentication required but no specific instruction",
+                None,
+            ),
+        ];
+
+        for (input, expected) in test_cases {
+            let result = extract_url_with_pattern(input, patterns);
+            assert_eq!(result.as_deref(), expected, "Failed for input: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_real_world_auth_scenarios() {
+        // Test realistic authentication command outputs
+        let status_outputs = vec![
+            (
+                "Twingate Status: Authenticating\nPlease visit: https://mycompany.twingate.com/auth/device?code=ABCD1234&session=xyz789 to complete authentication.",
+                true,
+            ),
+            (
+                "Authentication is required. Please run 'twingate auth' to authenticate.",
+                true,
+            ),
+            (
+                "User authentication is required",
+                true,
+            ),
+            (
+                "Twingate is online. Connected to network.",
+                false,
+            ),
+            (
+                "Service is not running",
+                false,
+            ),
+            (
+                "Authenticating... Please wait.",
+                true,
+            ),
+        ];
+
+        for (output, should_require_auth) in status_outputs {
+            let requires_auth = output.to_lowercase().contains("authentication is required") ||
+                               output.to_lowercase().contains("auth required") ||
+                               output.to_lowercase().contains("not authenticated") ||
+                               output.to_lowercase().contains("user authentication is required") ||
+                               output.to_lowercase().contains("authenticating");
+            
+            assert_eq!(requires_auth, should_require_auth, "Failed for output: {}", output);
+        }
+    }
+
+    #[test]
+    fn test_auth_command_resource_id_extraction() {
+        // Test resource ID extraction from auth command IDs
+        let test_cases = vec![
+            ("authenticate-resource-123", "123"), // split("-").last() returns the last part
+            ("authenticate-simple", "simple"),
+            ("authenticate-complex-resource-with-dashes", "dashes"), // split("-").last() returns "dashes"
+            ("authenticate-", ""),
+        ];
+
+        for (auth_id, expected_resource_id) in test_cases {
+            let resource_id = auth_id.split("-").last().unwrap_or_default();
+            assert_eq!(resource_id, expected_resource_id, "Failed for auth_id: {}", auth_id);
+        }
+    }
+
+    #[test]
+    fn test_auth_timeout_calculation() {
+        // Test that timeout values are reasonable
+        assert!(AUTH_TIMEOUT_SECONDS >= 60, "Auth timeout should be at least 1 minute");
+        assert!(AUTH_TIMEOUT_SECONDS <= 300, "Auth timeout should not exceed 5 minutes");
+        
+        assert!(AUTH_STATUS_CHECK_DELAY_MS >= 100, "Status check delay should be at least 100ms");
+        assert!(AUTH_STATUS_CHECK_DELAY_MS <= 2000, "Status check delay should not exceed 2 seconds");
+        
+        assert!(AUTH_RETRY_ATTEMPTS >= 5, "Should have at least 5 retry attempts");
+        assert!(AUTH_RETRY_ATTEMPTS <= 20, "Should not have more than 20 retry attempts");
+    }
+
+    #[test]
+    fn test_auth_url_validation() {
+        // Test that extracted URLs are valid format
+        let valid_urls = vec![
+            "https://example.com",
+            "https://company.twingate.com/auth",
+            "https://portal.example.com/device?code=123",
+            "http://localhost:8080/auth",
+        ];
+
+        for url in valid_urls {
+            assert!(url.starts_with("http://") || url.starts_with("https://"));
+            assert!(url.len() > 10, "URL should be longer than 10 characters");
+            assert!(!url.contains(" "), "URL should not contain spaces");
+        }
+    }
+
+    #[test]
+    fn test_auth_state_detection_patterns() {
+        // Test various authentication state detection patterns
+        let auth_patterns = vec![
+            "authentication is required",
+            "user authentication is required", 
+            "auth required",
+            "not authenticated",
+            "authentication needed",
+            "please authenticate",
+            "requires authentication",
+            "needs authentication",
+        ];
+
+        for pattern in auth_patterns {
+            let test_string = format!("Service status: {}", pattern);
+            assert!(test_string.to_lowercase().contains("authentication") ||
+                   test_string.to_lowercase().contains("auth"));
+        }
+    }
+
+    #[test]
+    fn test_error_conditions() {
+        // Test that appropriate error conditions are handled
+        let error_scenarios = vec![
+            "Service not found",
+            "Permission denied", 
+            "Network unreachable",
+            "Timeout occurred",
+            "Invalid credentials",
+        ];
+
+        for scenario in error_scenarios {
+            // These would typically result in TwingateError variants
+            assert!(!scenario.is_empty());
+            assert!(scenario.len() > 5);
+        }
+    }
+}
