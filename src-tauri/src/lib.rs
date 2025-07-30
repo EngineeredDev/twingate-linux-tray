@@ -10,6 +10,7 @@ mod models;
 mod network;
 mod state;
 mod tray;
+mod utils;
 
 use auth::{handle_service_auth, start_resource_auth};
 use commands::greet;
