@@ -1,41 +1,53 @@
+use regex::Regex;
+use std::sync::OnceLock;
+
+static URL_REGEX: OnceLock<Regex> = OnceLock::new();
+
+fn get_url_regex() -> &'static Regex {
+    URL_REGEX.get_or_init(|| {
+        Regex::new(r"https?://[^\s\)\]\}<>,]+").unwrap()
+    })
+}
+
+/// Extract the first URL found in the text using optimized regex matching
 pub fn extract_url_from_text(text: &str) -> Option<String> {
-    for line in text.lines() {
-        if let Some(url) = extract_url_from_line(line) {
-            return Some(url);
-        }
-    }
-    None
+    let regex = get_url_regex();
+    regex.find(text)
+        .map(|m| m.as_str())
+        .filter(|url| url.len() > 10) // Minimum reasonable URL length
+        .map(|url| {
+            // Clean up trailing punctuation
+            url.trim_end_matches(&['.', ',', ')', ']', '}'][..])
+                .trim_end_matches('"')
+                .to_string()
+        })
 }
 
+/// Extract URL from a single line (kept for backward compatibility)
+#[allow(dead_code)]
 pub fn extract_url_from_line(line: &str) -> Option<String> {
-    if let Some(url_start) = line.find("http") {
-        let url_part = &line[url_start..];
-        let url_end = url_part.find(char::is_whitespace).unwrap_or(url_part.len());
-        let url = url_part[..url_end].trim_end_matches(&['.', ',', ')', ']', '}', '"'][..]);
-        
-        if !url.is_empty() && (url.starts_with("https://") || url.starts_with("http://")) && url.len() > 10 {
-            return Some(url.to_string());
-        }
-    }
-    None
+    extract_url_from_text(line)
 }
 
+/// Extract URL with pattern matching - optimized version
 pub fn extract_url_with_pattern(text: &str, patterns: &[&str]) -> Option<String> {
-    for line in text.lines() {
-        for pattern in patterns {
-            if let Some(pattern_pos) = line.to_lowercase().find(pattern) {
-                let after_pattern = &line[pattern_pos + pattern.len()..];
-                if let Some(url) = extract_url_from_line(after_pattern) {
+    let text_lower = text.to_lowercase();
+    
+    // First try to find URLs after specific patterns
+    for pattern in patterns {
+        if let Some(pattern_pos) = text_lower.find(pattern) {
+            let search_start = pattern_pos + pattern.len();
+            if search_start < text.len() {
+                let after_pattern = &text[search_start..];
+                if let Some(url) = extract_url_from_text(after_pattern) {
                     return Some(url);
                 }
             }
         }
-        
-        if let Some(url) = extract_url_from_line(line) {
-            return Some(url);
-        }
     }
-    None
+    
+    // Fallback to any URL in the text
+    extract_url_from_text(text)
 }
 
 #[cfg(test)]

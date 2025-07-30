@@ -1,11 +1,11 @@
 use arboard::Clipboard;
 use tauri::{tray::TrayIconBuilder, AppHandle, Manager};
-use tauri_plugin_shell::ShellExt;
 use tauri_plugin_single_instance::init as single_instance_init;
 
 mod auth;
 mod commands;
 mod error;
+mod managers;
 mod models;
 mod network;
 mod state;
@@ -15,7 +15,8 @@ mod utils;
 use auth::{handle_service_auth, start_resource_auth};
 use commands::greet;
 use error::{Result, TwingateError};
-use network::{get_network_data, get_network_data_with_retry};
+use managers::{CommandExecutor, NetworkDataManager, StateManager, TrayManager};
+use network::get_network_data_with_retry;
 use state::AppState;
 use std::sync::Mutex;
 
@@ -32,41 +33,9 @@ async fn handle_copy_address(app_handle: &AppHandle, address_id: &str) -> Result
         TwingateError::invalid_resource_id(address_id)
     })?;
 
-    // Check if refresh is needed and get current network data
-    let state = app_handle.state::<AppStateType>();
-    let (needs_refresh, current_network_data) = {
-        let state_guard = state.lock().unwrap();
-        (
-            state_guard.should_refresh(std::time::Duration::from_secs(30)),
-            state_guard.network().cloned(),
-        )
-    };
-
-    // Get network data - refresh if needed, otherwise use cached
-    let network_data = if needs_refresh {
-        // Refresh network data without holding any locks
-        match get_network_data(app_handle).await {
-            Ok(fresh_data) => {
-                // Update state with fresh data
-                {
-                    let mut state_guard = state.lock().unwrap();
-                    state_guard.update_network(fresh_data.clone());
-                }
-                fresh_data
-            }
-            Err(e) => {
-                eprintln!("Error: Failed to refresh network data: {}", e);
-                return Err(e);
-            }
-        }
-    } else {
-        current_network_data
-    };
-
-    let n = network_data.ok_or_else(|| {
-        eprintln!("Error: Twingate service is not running");
-        TwingateError::ServiceNotRunning
-    })?;
+    // Use NetworkDataManager to get network data with caching
+    let network_manager = NetworkDataManager::new(app_handle, std::time::Duration::from_secs(30));
+    let n = network_manager.get_network_or_error().await?;
 
     let idx = n
         .resources
@@ -93,41 +62,9 @@ async fn handle_copy_address(app_handle: &AppHandle, address_id: &str) -> Result
 }
 
 async fn handle_open_in_browser(app_handle: &AppHandle, resource_id: &str) -> Result<()> {
-    // Check if refresh is needed and get current network data
-    let state = app_handle.state::<AppStateType>();
-    let (needs_refresh, current_network_data) = {
-        let state_guard = state.lock().unwrap();
-        (
-            state_guard.should_refresh(std::time::Duration::from_secs(30)),
-            state_guard.network().cloned(),
-        )
-    };
-
-    // Get network data - refresh if needed, otherwise use cached
-    let network_data = if needs_refresh {
-        // Refresh network data without holding any locks
-        match get_network_data(app_handle).await {
-            Ok(fresh_data) => {
-                // Update state with fresh data
-                {
-                    let mut state_guard = state.lock().unwrap();
-                    state_guard.update_network(fresh_data.clone());
-                }
-                fresh_data
-            }
-            Err(e) => {
-                eprintln!("Error: Failed to refresh network data: {}", e);
-                return Err(e);
-            }
-        }
-    } else {
-        current_network_data
-    };
-
-    let n = network_data.ok_or_else(|| {
-        eprintln!("Error: Twingate service is not running");
-        TwingateError::ServiceNotRunning
-    })?;
+    // Use NetworkDataManager to get network data with caching
+    let network_manager = NetworkDataManager::new(app_handle, std::time::Duration::from_secs(30));
+    let n = network_manager.get_network_or_error().await?;
 
     let resource = n
         .resources
@@ -158,11 +95,7 @@ async fn handle_open_in_browser(app_handle: &AppHandle, resource_id: &str) -> Re
 }
 
 async fn handle_open_auth_url(app_handle: &AppHandle) -> Result<()> {
-    let state = app_handle.state::<AppStateType>();
-    let auth_url = {
-        let state_guard = state.lock().unwrap();
-        state_guard.auth_url().map(|url| url.to_string())
-    };
+    let auth_url = StateManager::get_auth_url(app_handle);
 
     if let Some(url) = auth_url {
         println!("Opening authentication URL: {}", url);
@@ -184,11 +117,7 @@ async fn handle_open_auth_url(app_handle: &AppHandle) -> Result<()> {
 }
 
 async fn handle_copy_auth_url(app_handle: &AppHandle) -> Result<()> {
-    let state = app_handle.state::<AppStateType>();
-    let auth_url = {
-        let state_guard = state.lock().unwrap();
-        state_guard.auth_url().map(|url| url.to_string())
-    };
+    let auth_url = StateManager::get_auth_url(app_handle);
 
     if let Some(url) = auth_url {
         let mut clipboard = Clipboard::new().map_err(|e| {
@@ -210,93 +139,6 @@ async fn handle_copy_auth_url(app_handle: &AppHandle) -> Result<()> {
 }
 
 
-pub fn rebuild_tray_after_delay(app_handle: AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        // Use longer initial delay during authentication flow
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-
-        let mut retry_count = 0;
-        const MAX_REBUILD_RETRIES: u32 = 3;
-        const REBUILD_RETRY_DELAY_MS: u64 = 3000;
-
-        loop {
-            log::debug!(
-                "Attempting tray rebuild (attempt {} of {})",
-                retry_count + 1,
-                MAX_REBUILD_RETRIES + 1
-            );
-
-            let network_data = match get_network_data(&app_handle).await {
-                Ok(data) => {
-                    // Update state with fresh data
-                    let state = app_handle.state::<AppStateType>();
-                    let mut state_guard = state.lock().unwrap();
-                    state_guard.update_network(data.clone());
-
-                    match &data {
-                        Some(network) => {
-                            log::debug!(
-                                "Successfully refreshed network data for tray menu - User: {}",
-                                network.user.email
-                            );
-                        }
-                        None => {
-                            log::debug!("Twingate service is not running - showing disconnected menu");
-                        }
-                    }
-                    data
-                }
-                Err(TwingateError::ServiceConnecting) | Err(TwingateError::AuthenticationRequired) => {
-                    log::debug!("Service in transitional state during tray rebuild, will retry");
-
-                    if retry_count >= MAX_REBUILD_RETRIES {
-                        log::warn!("Exhausted retries for tray rebuild during authentication flow");
-                        None
-                    } else {
-                        retry_count += 1;
-                        log::debug!("Waiting {}ms before retry", REBUILD_RETRY_DELAY_MS);
-                        tokio::time::sleep(std::time::Duration::from_millis(
-                            REBUILD_RETRY_DELAY_MS,
-                        ))
-                        .await;
-                        continue;
-                    }
-                }
-                Err(TwingateError::RetryLimitExceeded { .. }) => {
-                    log::warn!(
-                        "Network data retrieval retry limit exceeded during tray rebuild"
-                    );
-                    None
-                }
-                Err(e) => {
-                    log::error!("Error getting network data for tray rebuild: {}", e);
-                    None
-                }
-            };
-
-            // Build and set the tray menu
-            match build_tray_menu(&app_handle, network_data).await {
-                Ok(menu) => match app_handle.tray_by_id(TWINGATE_TRAY_ID) {
-                    Some(tray) => {
-                        if let Err(e) = tray.set_menu(Some(menu)) {
-                            log::error!("Failed to set tray menu: {}", e);
-                        } else {
-                            log::debug!("Successfully updated tray menu");
-                        }
-                    }
-                    None => {
-                        log::error!("Tray icon not found with ID: {}", TWINGATE_TRAY_ID);
-                    }
-                },
-                Err(e) => {
-                    log::error!("Failed to build tray menu: {}", e);
-                }
-            }
-
-            break;
-        }
-    });
-}
 
 async fn handle_menu_action(app_handle: &AppHandle, action: MenuAction) -> Result<()> {
     match action {
@@ -306,93 +148,53 @@ async fn handle_menu_action(app_handle: &AppHandle, action: MenuAction) -> Resul
         }
         MenuAction::StartService => {
             println!("Starting Twingate service...");
-            let shell = app_handle.shell();
-            match shell
-                .command("pkexec")
-                .args(["twingate", "start"])
-                .output()
-                .await
-            {
+            let executor = CommandExecutor::new(app_handle);
+            match executor.execute_twingate_elevated(&["start"]).await {
                 Ok(output) => {
-                    if output.status.success() {
-                        println!("Successfully started Twingate service");
-                        println!("Output: {}", String::from_utf8_lossy(&output.stdout));
-                        
-                        // Check if authentication is required and handle it
-                        log::debug!("Checking if service requires authentication");
-                        match handle_service_auth(app_handle).await {
-                            Ok(_) => {
-                                // Check if we're now in authenticating state
-                                let state = app_handle.state::<AppStateType>();
-                                let is_authenticating = {
-                                    let state_guard = state.lock().unwrap();
-                                    matches!(state_guard.service_status(), crate::state::ServiceStatus::Authenticating(_))
-                                };
-                                
-                                // Only call rebuild_tray_after_delay if not authenticating
-                                // (if authenticating, the tray was already rebuilt immediately)
-                                if !is_authenticating {
-                                    rebuild_tray_after_delay(app_handle.clone());
-                                }
-                            }
-                            Err(e) => {
-                                log::error!("Failed to handle service authentication: {}", e);
-                                eprintln!("Warning: Failed to handle service authentication: {}", e);
-                                // Don't return error here - service is started, just auth failed
-                                rebuild_tray_after_delay(app_handle.clone());
+                    println!("Successfully started Twingate service");
+                    println!("Output: {}", String::from_utf8_lossy(&output.stdout));
+                    
+                    // Check if authentication is required and handle it
+                    log::debug!("Checking if service requires authentication");
+                    match handle_service_auth(app_handle).await {
+                        Ok(_) => {
+                            // Check if we're now in authenticating state
+                            let is_authenticating = StateManager::with_state(app_handle, |state| {
+                                matches!(state.service_status(), crate::state::ServiceStatus::Authenticating(_))
+                            });
+                            
+                            // Only call rebuild_tray_after_delay if not authenticating
+                            // (if authenticating, the tray was already rebuilt immediately)
+                            if !is_authenticating {
+                                TrayManager::rebuild_tray_after_delay(app_handle.clone());
                             }
                         }
-                    } else {
-                        let error_msg = String::from_utf8_lossy(&output.stderr);
-                        eprintln!(
-                            "Error: Failed to start Twingate service. Exit code: {:?}",
-                            output.status.code()
-                        );
-                        eprintln!("Error output: {}", error_msg);
-                        return Err(TwingateError::command_failed(
-                            "twingate start",
-                            output.status.code().unwrap_or(-1),
-                            error_msg,
-                        ));
+                        Err(e) => {
+                            log::error!("Failed to handle service authentication: {}", e);
+                            eprintln!("Warning: Failed to handle service authentication: {}", e);
+                            // Don't return error here - service is started, just auth failed
+                            TrayManager::rebuild_tray_after_delay(app_handle.clone());
+                        }
                     }
                 }
                 Err(e) => {
                     eprintln!("Error: Failed to execute start service command: {}", e);
-                    return Err(TwingateError::from(e));
+                    return Err(e);
                 }
             }
         }
         MenuAction::StopService => {
             println!("Stopping Twingate service...");
-            let shell = app_handle.shell();
-            match shell
-                .command("pkexec")
-                .args(["twingate", "stop"])
-                .output()
-                .await
-            {
+            let executor = CommandExecutor::new(app_handle);
+            match executor.execute_twingate_elevated(&["stop"]).await {
                 Ok(output) => {
-                    if output.status.success() {
-                        println!("Successfully stopped Twingate service");
-                        println!("Output: {}", String::from_utf8_lossy(&output.stdout));
-                    } else {
-                        let error_msg = String::from_utf8_lossy(&output.stderr);
-                        eprintln!(
-                            "Error: Failed to stop Twingate service. Exit code: {:?}",
-                            output.status.code()
-                        );
-                        eprintln!("Error output: {}", error_msg);
-                        return Err(TwingateError::command_failed(
-                            "twingate stop",
-                            output.status.code().unwrap_or(-1),
-                            error_msg,
-                        ));
-                    }
-                    rebuild_tray_after_delay(app_handle.clone());
+                    println!("Successfully stopped Twingate service");
+                    println!("Output: {}", String::from_utf8_lossy(&output.stdout));
+                    TrayManager::rebuild_tray_after_delay(app_handle.clone());
                 }
                 Err(e) => {
                     eprintln!("Error: Failed to execute stop service command: {}", e);
-                    return Err(TwingateError::from(e));
+                    return Err(e);
                 }
             }
         }
@@ -480,9 +282,7 @@ pub fn run() {
                 match get_network_data_with_retry(&app_handle, 10).await {
                     Ok(data) => {
                         // Initialize state with network data
-                        let state = app_handle.state::<AppStateType>();
-                        let mut state_guard = state.lock().unwrap();
-                        state_guard.update_network(data.clone());
+                        StateManager::update_network(&app_handle, data.clone());
 
                         match &data {
                             Some(network) => {
@@ -515,9 +315,7 @@ pub fn run() {
                         eprintln!("Application will start with disconnected menu");
                         
                         // Initialize state with no network data
-                        let state = app_handle.state::<AppStateType>();
-                        let mut state_guard = state.lock().unwrap();
-                        state_guard.update_network(None);
+                        StateManager::update_network(&app_handle, None);
                         
                         // Schedule background retry for network data
                         let retry_app_handle = app_handle.clone();
@@ -530,13 +328,11 @@ pub fn run() {
                                     log::debug!("Background retry successful - updating state and rebuilding tray");
                                     let retry_app_handle_clone = retry_app_handle.clone();
                                     {
-                                        let state = retry_app_handle.state::<AppStateType>();
-                                        let mut state_guard = state.lock().unwrap();
-                                        state_guard.update_network(Some(network));
+                                        StateManager::update_network(&retry_app_handle, Some(network));
                                     }
                                     
                                     // Rebuild tray with new data
-                                    rebuild_tray_after_delay(retry_app_handle_clone);
+                                    TrayManager::rebuild_tray_after_delay(retry_app_handle_clone);
                                 }
                                 Ok(None) => {
                                     log::debug!("Background retry confirmed service not running");
