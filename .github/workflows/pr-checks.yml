@@ -1,0 +1,57 @@
+name: Pull Request Checks
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src-tauri/**'
+      - '.github/workflows/**'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+        
+    - name: Cache Cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          src-tauri/target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+          
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+        
+    - name: Run unit tests
+      working-directory: src-tauri
+      run: cargo test --verbose
+      
+    - name: Check formatting
+      working-directory: src-tauri
+      run: cargo fmt --all -- --check
+      
+    - name: Run clippy
+      working-directory: src-tauri
+      run: cargo clippy --all-targets --all-features -- -D warnings
+      
+    - name: Check that Cargo.lock is up to date
+      working-directory: src-tauri
+      run: cargo check --locked
